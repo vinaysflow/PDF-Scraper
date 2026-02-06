@@ -28,10 +28,12 @@ ON_RAILWAY: bool = "PORT" in os.environ
 SAFE_MODE: bool = ON_RAILWAY
 
 # ---------------------------------------------------------------------------
-# Limits (tuned for Railway free-tier ~512 MB RAM)
+# Limits (conservative on Railway ~512 MB RAM, generous locally)
 # ---------------------------------------------------------------------------
-SYNC_MAX_PAGES: int = _env_int("SYNC_MAX_PAGES", default=5, hi=50)
-ASYNC_MAX_PAGES: int = _env_int("ASYNC_MAX_PAGES", default=100, hi=500)
+_SYNC_DEFAULT = 5 if ON_RAILWAY else 50
+_ASYNC_DEFAULT = 100 if ON_RAILWAY else 500
+SYNC_MAX_PAGES: int = _env_int("SYNC_MAX_PAGES", default=_SYNC_DEFAULT, hi=500)
+ASYNC_MAX_PAGES: int = _env_int("ASYNC_MAX_PAGES", default=_ASYNC_DEFAULT, hi=1000)
 SAFE_DPI: int = _env_int("SAFE_DPI", default=300, hi=1200)
 SAFE_BATCH_PAGES: int = _env_int("SAFE_BATCH_PAGES", default=3, hi=20)
 MAX_FILE_SIZE_BYTES: int = _env_int(

@@ -360,8 +360,10 @@
 
       const formData = new FormData();
       formData.append("file", file);
-      const maxPagesVal = document.getElementById("maxPages").value;
-      if (maxPagesVal) formData.append("max_pages", maxPagesVal);
+      const maxPagesRaw = document.getElementById("maxPages").value.trim();
+      // Parse max_pages: only accept valid positive integers; everything else = all pages
+      const maxPagesNum = /^\d+$/.test(maxPagesRaw) ? parseInt(maxPagesRaw, 10) : null;
+      if (maxPagesNum !== null && maxPagesNum > 0) formData.append("max_pages", String(maxPagesNum));
       if (document.getElementById("forceOcr").checked) formData.append("force_ocr", "true");
       if (document.getElementById("qualityTarget90").checked) formData.append("quality_target", "90");
       if (document.getElementById("extractDiagrams").checked) formData.append("extract_diagrams", "true");
@@ -369,8 +371,7 @@
       const params = new URLSearchParams();
       formData.forEach((v, k) => { if (k !== "file") params.append(k, v); });
 
-      // Decide sync vs async: use async when max_pages is empty (all) or > syncMaxPages
-      const maxPagesNum = maxPagesVal ? parseInt(maxPagesVal, 10) : null;
+      // Decide sync vs async: use async when no limit set (all pages) or > syncMaxPages
       const useAsync = maxPagesNum === null || maxPagesNum > syncMaxPages;
 
       try {
