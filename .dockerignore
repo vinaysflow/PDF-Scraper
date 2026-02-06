@@ -1,0 +1,14 @@
+.venv
+outputs
+.git
+__pycache__
+*.pyc
+.vercel
+public
+api
+vercel.json
+.vercelignore
+*.egg-info
+tests
+training
+docs

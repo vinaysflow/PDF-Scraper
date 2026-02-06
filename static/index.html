@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF OCR · Extract &amp; analyze</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #18181c;
+      --border: #2a2a30;
+      --text: #e4e4e7;
+      --muted: #71717a;
+      --accent: #a78bfa;
+      --accent-hover: #c4b5fd;
+      --success: #34d399;
+      --warn: #fbbf24;
+      --error: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 600;
+      margin: 0 0 0.25rem 0;
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .card h2 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 0 0 1rem 0;
+    }
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 0.35rem;
+    }
+    input[type="file"] {
+      width: 100%;
+      padding: 0.75rem;
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    input[type="file"]:hover { border-color: var(--accent); }
+    .options {
+      display: grid;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .row label { margin-bottom: 0; }
+    input[type="number"] {
+      width: 5rem;
+      padding: 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.875rem;
+    }
+    input[type="checkbox"] {
+      width: 1.1rem;
+      height: 1.1rem;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    button {
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.75rem 1.5rem;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-top: 0.5rem;
+    }
+    button:hover { background: var(--accent-hover); }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    .status.working {
+      display: block;
+      background: rgba(167, 139, 250, 0.12);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+    }
+    .status.error {
+      display: block;
+      background: rgba(248, 113, 113, 0.12);
+      border: 1px solid var(--error);
+      color: var(--error);
+    }
+    .status.success {
+      display: block;
+      background: rgba(52, 211, 153, 0.12);
+      border: 1px solid var(--success);
+      color: var(--success);
+    }
+    #result {
+      display: none;
+      margin-top: 1.5rem;
+    }
+    #result.visible { display: block; }
+    .result-summary {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .result-summary span { color: var(--text); }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge.approved { background: rgba(52, 211, 153, 0.2); color: var(--success); }
+    .badge.review { background: rgba(251, 191, 36, 0.2); color: var(--warn); }
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 1rem;
+    }
+    .actions a, .actions button {
+      font-size: 0.875rem;
+      padding: 0.5rem 1rem;
+      text-decoration: none;
+      border-radius: 6px;
+      background: var(--border);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .actions a:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .preview-text {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 0.75rem;
+      background: var(--bg);
+      border-radius: 6px;
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>PDF OCR</h1>
+    <p class="subtitle">Upload a PDF to extract text, run OCR with quality checks, and optionally analyze diagrams.</p>
+
+    <div class="card">
+      <h2>Upload</h2>
+      <form id="uploadForm">
+        <label for="file">PDF file</label>
+        <input type="file" id="file" name="file" accept=".pdf" required />
+        <div class="options">
+          <div class="row">
+            <label for="maxPages">Max pages</label>
+            <input type="number" id="maxPages" name="max_pages" min="1" max="500" placeholder="All" title="Leave empty for all pages" />
+            <span style="color: var(--muted); font-size: 0.85rem;">(empty = all)</span>
+          </div>
+          <div class="row">
+            <input type="checkbox" id="forceOcr" name="force_ocr" />
+            <label for="forceOcr">Force OCR (run Tesseract on every page)</label>
+          </div>
+          <div class="row">
+            <input type="checkbox" id="qualityTarget90" name="quality_target_90" checked />
+            <label for="qualityTarget90">Quality target 90%</label>
+          </div>
+          <div class="row">
+            <input type="checkbox" id="extractDiagrams" name="extract_diagrams" />
+            <label for="extractDiagrams">Extract diagrams (VLM descriptions; needs API key)</label>
+          </div>
+        </div>
+        <button type="submit" id="submitBtn">Extract</button>
+      </form>
+      <div id="status" class="status"></div>
+    </div>
+
+    <div id="result" class="card">
+      <h2>Result</h2>
+      <div class="result-summary" id="resultSummary"></div>
+      <div id="qualityBadge"></div>
+      <div id="previewArea"></div>
+      <div class="actions">
+        <a id="downloadJson" href="#" download="extraction.json">Download full JSON</a>
+        <button type="button" id="copyJson">Copy JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("uploadForm");
+    const fileInput = document.getElementById("file");
+    const submitBtn = document.getElementById("submitBtn");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const resultSummary = document.getElementById("resultSummary");
+    const qualityBadge = document.getElementById("qualityBadge");
+    const previewArea = document.getElementById("previewArea");
+    const downloadLink = document.getElementById("downloadJson");
+    const copyBtn = document.getElementById("copyJson");
+
+    let lastResult = null;
+
+    function setStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = "status " + (type || "");
+      statusEl.style.display = msg ? "block" : "none";
+    }
+
+    function showResult(data) {
+      lastResult = data;
+      resultEl.classList.add("visible");
+      const pages = data.pages || [];
+      const quality = data.quality;
+      const extraction = data.extraction || {};
+      const diagrams = data.diagrams;
+
+      resultSummary.textContent = "";
+      const parts = [];
+      parts.push(`${pages.length} page(s)`);
+      parts.push(` · ${extraction.engine || "—"}`);
+      if (data.stats) {
+        parts.push(` · ${data.stats.total_tokens || 0} tokens`);
+        if (data.stats.avg_confidence != null) parts.push(` · avg conf ${Number(data.stats.avg_confidence).toFixed(1)}%`);
+      }
+      resultSummary.textContent = parts.join("");
+
+      qualityBadge.innerHTML = "";
+      if (quality) {
+        const status = quality.status || "—";
+        const cls = status === "approved" ? "approved" : "review";
+        const badge = document.createElement("span");
+        badge.className = "badge " + cls;
+        badge.textContent = "Quality: " + status;
+        if (quality.pages_total != null) {
+          badge.textContent += ` (${quality.approved_count ?? 0}/${quality.pages_total} approved)`;
+        }
+        qualityBadge.appendChild(badge);
+      }
+
+      previewArea.innerHTML = "";
+      const preview = (data.full_text || "").slice(0, 2000);
+      if (preview) {
+        const pre = document.createElement("div");
+        pre.className = "preview-text";
+        pre.textContent = preview + (data.full_text.length > 2000 ? "\n\n…" : "");
+        previewArea.appendChild(pre);
+      }
+
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      downloadLink.href = URL.createObjectURL(blob);
+      downloadLink.download = (data.filename || "extraction").replace(/\.pdf$/i, "") + "_extraction.json";
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const file = fileInput.files[0];
+      if (!file) return;
+      submitBtn.disabled = true;
+      setStatus("Processing… This may take several minutes for large PDFs.", "working");
+      resultEl.classList.remove("visible");
+
+      const formData = new FormData();
+      formData.append("file", file);
+      const maxPages = document.getElementById("maxPages").value;
+      if (maxPages) formData.append("max_pages", maxPages);
+      if (document.getElementById("forceOcr").checked) formData.append("force_ocr", "true");
+      if (document.getElementById("qualityTarget90").checked) formData.append("quality_target", "90");
+      if (document.getElementById("extractDiagrams").checked) formData.append("extract_diagrams", "true");
+
+      const params = new URLSearchParams();
+      formData.forEach((v, k) => { if (k !== "file") params.append(k, v); });
+      const url = "/api/extract?" + params.toString();
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          body: formData,
+          headers: { "Accept": "application/json" },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setStatus(data.detail || res.statusText || "Request failed", "error");
+          return;
+        }
+        setStatus("Done.", "success");
+        showResult(data);
+      } catch (err) {
+        setStatus(err.message || "Network or server error.", "error");
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    copyBtn.addEventListener("click", () => {
+      if (!lastResult) return;
+      const json = JSON.stringify(lastResult, null, 2);
+      navigator.clipboard.writeText(json).then(() => {
+        copyBtn.textContent = "Copied";
+        setTimeout(() => { copyBtn.textContent = "Copy JSON"; }, 2000);
+      });
+    });
+  </script>
+</body>
+</html>

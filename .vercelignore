@@ -1,0 +1,13 @@
+.venv
+outputs
+*.pyc
+__pycache__
+.git
+tests
+training
+*.egg-info
+docs
+app
+pyproject.toml
+README.md
+static
