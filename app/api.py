@@ -40,10 +40,9 @@ async def _do_extract(
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
-    suffix = ".pdf" if not file.filename.lower().endswith(".pdf") else ""
     temp_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             temp_path = tmp.name
             content = await file.read()
             if not content:
