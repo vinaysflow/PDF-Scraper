@@ -74,7 +74,7 @@ Sources: Zuva, Microsoft Computer Vision, Modal doc-OCR examples, Google Doc AI 
 | **API shape** | Single POST that runs full extraction in-request | Sync for 1–few pages; async (202 + job ID, poll, get result) for multi-page |
 | **Input** | Whole PDF in request body (`await file.read()`) | For large: upload to storage, pass reference; or strict size limit for sync |
 | **Processing** | All pages rendered then OCR’d in one go (high peak memory) | Batch pages or stream processing to bound memory |
-| **Tika (Java)** | Optional but can start JVM in-process → OOM risk in containers | Doc AI/Textract are managed services; we run our own stack so must avoid heavy in-process JVM in constrained envs |
+| **Native extraction (Java)** | Optional but can start JVM in-process → OOM risk in containers | Doc AI/Textract are managed services; we run our own stack so must avoid heavy in-process JVM in constrained envs |
 | **Limits** | Ad-hoc caps (DPI, pages) added reactively | Documented sync vs async limits and safe defaults |
 | **Observability** | Minimal (one startup line) | Job status, duration, error reason per job |
 
@@ -107,14 +107,14 @@ Optional: webhook or SSE to push completion instead of polling (Phase 2).
 
 ### 4.3 Processing (memory and robustness)
 
-- **No Tika in constrained envs**: when `SKIP_TIKA=1` (or “production” mode), Tika is never imported or called; OCR-only path only.
+- **No native extraction in constrained envs**: when `SKIP_NATIVE=1` (or “production” mode), native extraction is never imported or called; OCR-only path only.
 - **Page batching**: process N pages at a time (e.g. 2–3): render → OCR → discard images → next batch. Merge results. Caps peak memory regardless of page count.
 - **Single source of “safe” limits**: one config (env or config file) for sync max pages, async max pages, max file size, DPI; logged at startup.
-- **Worker concurrency**: limit parallel OCR/Tika workers (e.g. env) so we don’t multiply memory and CPU in a small container.
+- **Worker concurrency**: limit parallel OCR/native workers (e.g. env) so we don’t multiply memory and CPU in a small container.
 
 ### 4.4 Observability and operations
 
-- **Startup**: log sync/async limits, whether Tika is enabled, and “safe” defaults (e.g. `SKIP_TIKA`, `SAFE_MAX_PAGES`, `SAFE_DPI`).
+- **Startup**: log sync/async limits, whether native extraction is enabled, and “safe” defaults (e.g. `SKIP_NATIVE`, `SAFE_MAX_PAGES`, `SAFE_DPI`).
 - **Per job**: status, created_at, updated_at, optional duration; on failure, store and return a short error message/code.
 - **Health**: e.g. `GET /health` that returns 200 when the app (and optionally dependencies) are ready; no heavy work.
 
@@ -124,9 +124,9 @@ Optional: webhook or SSE to push completion instead of polling (Phase 2).
 
 ### Phase 1 – Stability (no new API shape)
 
-- **Guarantee Tika-off path**: when `SKIP_TIKA=1`, never import or call Tika; single code path, no JVM.
+- **Guarantee native-off path**: when `SKIP_NATIVE=1`, never import or call native extraction; single code path, no JVM.
 - **Stream upload to temp file**: do not load full PDF into RAM; stream request body to disk.
-- **Page batching in extract pipeline**: in “safe” mode (e.g. when `PORT` or `SKIP_TIKA`), render + OCR in small batches (e.g. 2–3 pages), merge; cap peak memory.
+- **Page batching in extract pipeline**: in “safe” mode (e.g. when `PORT` or `SKIP_NATIVE`), render + OCR in small batches (e.g. 2–3 pages), merge; cap peak memory.
 - **Centralized limits**: one module or config for `SYNC_MAX_PAGES`, `ASYNC_MAX_PAGES` (for later), `MAX_FILE_SIZE`, `SAFE_DPI`; read from env with sane defaults; log at startup.
 - **Docs**: single “Production / Railway” section: env vars, limits, 502 checklist, and “use async when available” note.
 
@@ -167,6 +167,6 @@ Goal: multi-page and large PDFs go through async path; no long HTTP request; ali
 
 - **Best-in-class** (Google, Amazon, others) use **sync for small/single-page** and **async (202 + job ID + poll) for multi-page/large**; they avoid long-running request handlers and put large input in storage + reference.
 - **Our app** today is a single long-running sync path with inline upload and all-pages-in-memory, which leads to 502s and OOM in constrained deployments.
-- **Target**: Phase 1 = same API but stable (Tika-off, stream upload, page batching, clear limits). Phase 2 = add async API and polling so we match industry pattern. Phase 3 = limits, optional storage ref, and robustness.
+- **Target**: Phase 1 = same API but stable (native-off, stream upload, page batching, clear limits). Phase 2 = add async API and polling so we match industry pattern. Phase 3 = limits, optional storage ref, and robustness.
 
 This gives a research-grounded, non-reactive roadmap instead of more one-off caps.

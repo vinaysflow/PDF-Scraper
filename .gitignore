@@ -10,6 +10,7 @@ build
 
 # Outputs and local data
 outputs/
+image_store/
 
 # IDE and OS
 .idea

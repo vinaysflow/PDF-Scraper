@@ -1,5 +1,5 @@
 # Backend for PDF OCR (for Railway / Render / Fly.io)
-# Requires: tesseract, poppler-utils, openjdk (for Tika), libs for OpenCV
+# Requires: tesseract, poppler-utils, openjdk (for native extraction), libs for OpenCV
 
 FROM python:3.11-slim-bookworm
 

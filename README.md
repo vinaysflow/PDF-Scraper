@@ -2,9 +2,9 @@
 
 Production-ready MVP that extracts text and token-level OCR from PDFs and returns a canonical JSON payload. It supports:
 
-- Born-digital PDFs via Apache Tika
+- Born-digital PDFs via native extraction
 - Scanned PDFs via Tesseract OCR
-- Mixed PDFs with hybrid extraction (Tika first, OCR fallback)
+- Mixed PDFs with hybrid extraction (native first, OCR fallback)
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Install system dependencies:
 brew install tesseract poppler
 ```
 
-Apache Tika runs via Java under the hood. Ensure a JRE is available:
+Native extraction runs via Java under the hood. Ensure a JRE is available:
 
 ```
 brew install openjdk
@@ -39,7 +39,7 @@ pip install -e .
 python -m app.cli /path/to/file.pdf --dpi 600 --max-pages 10
 ```
 
-Force OCR even when Tika succeeds (to produce confidence/tokens):
+Force OCR even when native extraction succeeds (to produce confidence/tokens):
 
 ```
 python -m app.cli /path/to/file.pdf --dpi 600 --max-pages 10 --force-ocr
@@ -78,9 +78,9 @@ python -m app.cli /path/to/file.pdf --quality-retries 2
   - avg confidence >= 93 (computed on tokens with confidence >= 92)
   - low-confidence ratio <= 50%
   - dual-pass similarity >= 0.85
-  - Tika vs OCR similarity >= 0.85 (when Tika text is present)
+  - native vs OCR similarity >= 0.85 (when native text is present)
 - In strict mode, output is still returned with `quality.status=needs_review` when any page fails after retries.
-- Decision rule: if `accuracy_score >= 0.8` then choose **B** (OCR text/tokens), else choose **A** (Tika text when available).
+- Decision rule: if `accuracy_score >= 0.8` then choose **B** (OCR text/tokens), else choose **A** (native text when available).
 - OCR uses layered preprocessing strategies (standard + aggressive) and multiple PSM passes, then selects the best consensus output.
 - You can override OCR language and tessdata path:
   ```
@@ -96,7 +96,7 @@ To aim for **~90% accuracy** and have pages pass quality as “approved”:
    ```
    python -m app.cli /path/to/file.pdf --quality-target 90 --force-ocr
    ```
-   With `--quality-target 90`, gates are: avg confidence ≥ 90%, low-conf ratio ≤ 60%, dual-pass and Tika similarity ≥ 0.90, and OCR is chosen when accuracy ≥ 0.90.
+   With `--quality-target 90`, gates are: avg confidence ≥ 90%, low-conf ratio ≤ 60%, dual-pass and native similarity ≥ 0.90, and OCR is chosen when accuracy ≥ 0.90.
 
 2. **Improve OCR input and retries**
    - **DPI:** Use 600–800 for scans (e.g. `--dpi 800` for poor scans).
@@ -112,7 +112,7 @@ To aim for **~90% accuracy** and have pages pass quality as “approved”:
 
 5. **Check the output**
    - `quality.status`: `"approved"` means all pages passed the (possibly relaxed) gates.
-   - `quality.pages[].accuracy_score`: Tika vs OCR similarity or confidence-derived score; aim for ≥ 0.90 when using `--quality-target 90`.
+   - `quality.pages[].accuracy_score`: native vs OCR similarity or confidence-derived score; aim for ≥ 0.90 when using `--quality-target 90`.
    - `quality.pages[].failed_gates`: lists which gates failed so you can tune DPI, retries, or source PDFs.
 
 ## Performance and parallelism (production)
@@ -121,7 +121,7 @@ The pipeline is tuned for faster time-to-output:
 
 - **Parallel OCR:** Page-level OCR runs in a thread pool (default 4 workers). Set `OCR_WORKERS` to tune (e.g. `OCR_WORKERS=8`).
 - **Parallel VLM:** When using `--extract-diagrams`, figure descriptions are requested in parallel (default 5 workers). Set `VLM_WORKERS` to tune (e.g. `VLM_WORKERS=10`); stay within your OpenAI rate limits.
-- **Tika + render overlap:** With `--force-ocr`, Tika extraction and PDF→image rendering run in parallel so OCR can start as soon as both are ready.
+- **Native + render overlap:** With `--force-ocr`, native extraction and PDF→image rendering run in parallel so OCR can start as soon as both are ready.
 
 Example for a 31-page PDF with diagrams:
 
@@ -191,7 +191,7 @@ The JSON output includes:
 - `full_text`: concatenated text across pages
 - `stats`: `{total_tokens,avg_confidence}` (avg uses tokens with confidence >= 92)
 
-Token entries include `text`, `bbox` (`x,y,w,h`), and `confidence`. Pages extracted with Tika have an empty `tokens` array.
+Token entries include `text`, `bbox` (`x,y,w,h`), and `confidence`. Pages extracted with native extraction have an empty `tokens` array.
 
 ## Diagram extraction
 

@@ -34,15 +34,15 @@
 
 **5. 502 Bad Gateway when uploading a PDF (e.g. after a few seconds)**
 
-- The app uses Apache Tika (Java), which starts a JVM on first use and can exhaust memory → process killed → 502. PDF rendering at high DPI can also OOM.
+- The app uses native extraction (Java), which starts a JVM on first use and can exhaust memory → process killed → 502. PDF rendering at high DPI can also OOM.
 - **Fix (required):** In Railway → your service → **Variables**, add:
-  - **Name:** `SKIP_TIKA`  
+  - **Name:** `SKIP_NATIVE`  
   - **Value:** `1`
 - Save, then **Redeploy** (Variables don’t apply until the service is redeployed).
 - After deploy, open **Deployments** → latest → **Logs**. On startup you should see a line like:  
-  `PDF OCR: SKIP_TIKA='1' PORT='8000' -> safe_limits=on`  
-  If you see `SKIP_TIKA=''`, the variable isn’t set or the deploy didn’t pick it up.
-- With `SKIP_TIKA=1`, extraction is OCR-only (no Tika). DPI and page count are also capped on Railway to reduce memory.
+  `PDF OCR: SKIP_NATIVE='1' PORT='8000' -> safe_limits=on`  
+  If you see `SKIP_NATIVE=''`, the variable isn’t set or the deploy didn’t pick it up.
+- With `SKIP_NATIVE=1`, extraction is OCR-only (no native extraction). DPI and page count are also capped on Railway to reduce memory.
 
 ---
 

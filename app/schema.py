@@ -34,7 +34,9 @@ class PageImage(BaseModel):
     height: int
     bbox: dict | None = None  # {x, y, w, h} in points
     size_bytes: int = 0
-    base64_data: str | None = None  # base64-encoded image bytes
+    base64_data: str | None = None  # base64-encoded image bytes (opt-in)
+    image_url: str | None = None  # API-served URL for the image
+    image_path: str | None = None  # local file path on disk
     description: str | None = None  # optional VLM caption
 
 
@@ -94,11 +96,23 @@ class ExtractionMetadata(BaseModel):
     engine: str
 
 
+class PageConfidenceSummary(BaseModel):
+    """Per-page confidence breakdown (raw and filtered)."""
+
+    page_number: int
+    total_tokens: int
+    raw_avg_confidence: float | None = None  # all tokens, unfiltered
+    filtered_avg_confidence: float | None = None  # tokens >= MIN_CONFIDENCE threshold
+    low_conf_token_count: int = 0
+    low_conf_ratio: float | None = None
+
+
 class Stats(BaseModel):
     """Aggregate stats for the extraction."""
 
     total_tokens: int
     avg_confidence: float | None = None
+    confidence_pages: List[PageConfidenceSummary] = Field(default_factory=list)
 
 
 class QualityGate(BaseModel):
@@ -107,11 +121,11 @@ class QualityGate(BaseModel):
     page_number: int
     status: str
     layout: str | None = None
-    page_type: str | None = None  # "text" | "tika_sufficient" | "tika_fallback" | "figure"
+    page_type: str | None = None  # "text" | "native_sufficient" | "native_fallback" | "figure"
     avg_confidence: float | None = None
     low_conf_ratio: float | None = None
     dual_pass_similarity: float | None = None
-    tika_similarity: float | None = None
+    native_similarity: float | None = None
     failed_gates: List[str] = Field(default_factory=list)
     retry_attempts: int = 0
     best_strategy: dict | None = None
@@ -128,7 +142,7 @@ class QualityResult(BaseModel):
     min_avg_confidence: float
     max_low_conf_ratio: float
     min_dual_pass_similarity: float
-    min_tika_similarity: float
+    min_native_similarity: float
     pages: List[QualityGate]
 
 
@@ -184,6 +198,7 @@ class ExtractionResult(BaseModel):
     stats: Stats
     quality: QualityResult | None = None
     diagrams: DocumentDiagramsResult | None = None
+    enrichment_warnings: List[str] = Field(default_factory=list)
 
 
 class QualitySummary(BaseModel):
@@ -217,6 +232,85 @@ class HighQualityDiagram(BaseModel):
     kind: str | None = None
 
 
+class HighQualityImage(BaseModel):
+    """Image metadata for an approved page (no base64 data)."""
+
+    page_number: int
+    index: int
+    format: str
+    width: int
+    height: int
+    bbox: dict | None = None
+    image_url: str | None = None
+    image_path: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Question Bank models
+# ---------------------------------------------------------------------------
+
+
+class QuestionOption(BaseModel):
+    """One MCQ option (e.g. A, B, C, D)."""
+
+    label: str  # "A", "B", "C", "D"
+    text: str  # the option text
+
+
+class QuestionImage(BaseModel):
+    """Image associated with a specific question."""
+
+    image_url: str | None = None
+    image_path: str | None = None
+    format: str = "png"
+    width: int = 0
+    height: int = 0
+    description: str | None = None  # VLM description if available
+    bbox: dict | None = None
+
+
+class QuestionPart(BaseModel):
+    """Sub-part of a question (e.g. (a), (b), (i), (ii))."""
+
+    label: str  # "a", "b", "i", "ii"
+    text: str
+    marks: int | None = None
+
+
+class Question(BaseModel):
+    """A single question extracted from an exam paper."""
+
+    question_number: int
+    section: str | None = None  # "I", "II", etc.
+    page_number: int
+    text: str  # full question text
+    question_type: str | None = None  # mcq, short_answer, long_answer, proof, construction
+    marks: int | None = None
+    topic: str | None = None
+    difficulty: str | None = None  # easy, medium, hard
+    options: List[QuestionOption] = Field(default_factory=list)
+    sub_parts: List[QuestionPart] = Field(default_factory=list)
+    images: List[QuestionImage] = Field(default_factory=list)
+    has_or_alternative: bool = False
+    or_question: Question | None = None  # the OR alternative
+
+
+class QuestionBank(BaseModel):
+    """Database-ready question bank extracted from an exam paper."""
+
+    model_config = ConfigDict(json_encoders={datetime: lambda dt: dt.isoformat()})
+
+    doc_id: str
+    filename: str
+    ingested_at: datetime
+    exam_title: str | None = None
+    subject: str | None = None
+    total_marks: int | None = None
+    total_questions: int
+    sections: List[dict] = Field(default_factory=list)
+    questions: List[Question]
+
+
 class ConsolidatedReport(BaseModel):
     """Single consolidated output from all checks; high-quality items only for pages/diagrams."""
 
@@ -225,6 +319,7 @@ class ConsolidatedReport(BaseModel):
     document: dict  # filename, doc_id, pages_total, ingested_at
     quality_summary: QualitySummary | None = None
     high_quality_pages: List[HighQualityPage] = Field(default_factory=list)
+    high_quality_images: List[HighQualityImage] = Field(default_factory=list)
     high_quality_diagrams: List[HighQualityDiagram] = Field(default_factory=list)
     full_text_preview: str | None = None  # first 5000 chars
     stats: dict | None = None

@@ -7,13 +7,16 @@ from datetime import datetime
 
 from app.schema import (
     BBox,
+    ConsolidatedReport,
     DiagramReading,
     DiagramResult,
     DocumentDiagramsResult,
     ExtractionMetadata,
     ExtractionResult,
     FigureInfo,
+    HighQualityImage,
     Page,
+    PageImage,
     QualityGate,
     QualityResult,
     Stats,
@@ -41,7 +44,7 @@ class TestToken(unittest.TestCase):
 
 class TestPage(unittest.TestCase):
     def test_page_default_tokens(self) -> None:
-        p = Page(page_number=1, source="tika", text="x")
+        p = Page(page_number=1, source="native", text="x")
         self.assertEqual(p.tokens, [])
 
     def test_page_model_dump(self) -> None:
@@ -54,10 +57,10 @@ class TestPage(unittest.TestCase):
 class TestExtractionMetadata(unittest.TestCase):
     def test_metadata_dpi_optional(self) -> None:
         m = ExtractionMetadata(
-            method="tika",
+            method="native",
             pages_total=1,
             dpi=None,
-            engine="tika",
+            engine="native",
         )
         self.assertIsNone(m.dpi)
 
@@ -82,7 +85,7 @@ class TestQualityResult(unittest.TestCase):
             min_avg_confidence=90.0,
             max_low_conf_ratio=0.6,
             min_dual_pass_similarity=0.9,
-            min_tika_similarity=0.9,
+            min_native_similarity=0.9,
             pages=[],
         )
         self.assertEqual(len(q.pages), 0)
@@ -135,12 +138,12 @@ class TestExtractionResult(unittest.TestCase):
             filename="x.pdf",
             ingested_at=datetime.now(),
             extraction=ExtractionMetadata(
-                method="tika",
+                method="native",
                 pages_total=1,
                 dpi=None,
-                engine="tika",
+                engine="native",
             ),
-            pages=[Page(page_number=1, source="tika", text="x", tokens=[])],
+            pages=[Page(page_number=1, source="native", text="x", tokens=[])],
             full_text="x",
             stats=Stats(total_tokens=0, avg_confidence=None),
             quality=None,
@@ -148,6 +151,78 @@ class TestExtractionResult(unittest.TestCase):
         )
         self.assertIsNone(r.quality)
         self.assertIsNone(r.diagrams)
+
+
+class TestPageImage(unittest.TestCase):
+    def test_image_url_and_path_fields(self) -> None:
+        img = PageImage(
+            format="png",
+            width=100,
+            height=100,
+            size_bytes=5000,
+            image_url="/api/images/doc-1/page_1/img_0.png",
+            image_path="/tmp/image_store/doc-1/page_1/img_0.png",
+        )
+        self.assertEqual(img.image_url, "/api/images/doc-1/page_1/img_0.png")
+        self.assertEqual(img.image_path, "/tmp/image_store/doc-1/page_1/img_0.png")
+        self.assertIsNone(img.base64_data)
+
+    def test_image_with_base64_data(self) -> None:
+        img = PageImage(
+            format="jpeg",
+            width=200,
+            height=150,
+            size_bytes=10000,
+            base64_data="iVBORw0KGgo=",
+            image_url="/api/images/doc-2/page_1/img_0.jpeg",
+        )
+        self.assertEqual(img.base64_data, "iVBORw0KGgo=")
+
+    def test_image_defaults(self) -> None:
+        img = PageImage(format="png", width=50, height=50)
+        self.assertIsNone(img.base64_data)
+        self.assertIsNone(img.image_url)
+        self.assertIsNone(img.image_path)
+        self.assertIsNone(img.xref)
+        self.assertIsNone(img.bbox)
+        self.assertIsNone(img.description)
+        self.assertEqual(img.size_bytes, 0)
+
+
+class TestHighQualityImage(unittest.TestCase):
+    def test_high_quality_image_fields(self) -> None:
+        hqi = HighQualityImage(
+            page_number=1,
+            index=0,
+            format="png",
+            width=100,
+            height=100,
+            bbox={"x": 10, "y": 20, "w": 100, "h": 100},
+            image_url="/api/images/doc-1/page_1/img_0.png",
+            image_path="/tmp/store/doc-1/page_1/img_0.png",
+        )
+        self.assertEqual(hqi.page_number, 1)
+        self.assertEqual(hqi.index, 0)
+        self.assertEqual(hqi.image_url, "/api/images/doc-1/page_1/img_0.png")
+
+
+class TestConsolidatedReportWithImages(unittest.TestCase):
+    def test_high_quality_images_default_empty(self) -> None:
+        report = ConsolidatedReport(document={"filename": "a.pdf"})
+        self.assertEqual(report.high_quality_images, [])
+
+    def test_high_quality_images_included(self) -> None:
+        hqi = HighQualityImage(
+            page_number=1, index=0, format="png",
+            width=100, height=100,
+            image_url="/api/images/doc-1/page_1/img_0.png",
+        )
+        report = ConsolidatedReport(
+            document={"filename": "a.pdf"},
+            high_quality_images=[hqi],
+        )
+        self.assertEqual(len(report.high_quality_images), 1)
+        self.assertEqual(report.high_quality_images[0].format, "png")
 
 
 if __name__ == "__main__":

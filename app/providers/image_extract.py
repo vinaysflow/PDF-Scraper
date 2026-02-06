@@ -4,6 +4,9 @@ This provider pulls images that are *embedded* in the PDF (JPEG, PNG, etc.)
 and returns them with bounding-box metadata.  It does **not** rasterise
 vector graphics — those remain as text/path data.
 
+Images can optionally be saved to disk and/or base64-encoded.  By default,
+base64 encoding is **off** to keep JSON payloads small.
+
 Usage::
 
     from app.providers.image_extract import extract_page_images
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +51,7 @@ def extract_page_images(
     pdf_path: str | Path,
     page_numbers: list[int] | None = None,
     min_area: float = MIN_IMAGE_AREA_PT2,
-    include_base64: bool = True,
+    include_base64: bool = False,
 ) -> dict[int, list[dict[str, Any]]]:
     """Extract embedded images from selected pages.
 
@@ -61,12 +65,14 @@ def extract_page_images(
         Minimum bounding-box area (in pt²) to keep an image.
     include_base64:
         If True, include the image bytes as a base64-encoded string.
+        Defaults to False to keep JSON output small.
 
     Returns
     -------
     dict mapping page_number -> list of image dicts, each with keys:
         ``bbox``, ``format``, ``width``, ``height``, ``base64_data`` (optional),
-        ``xref`` (PDF internal cross-reference id for dedup).
+        ``xref`` (PDF internal cross-reference id for dedup),
+        ``_raw_bytes`` (raw bytes, always present for downstream save-to-disk).
     """
     doc = fitz.open(str(pdf_path))
     result: dict[int, list[dict[str, Any]]] = {}
@@ -122,6 +128,7 @@ def extract_page_images(
                     "height": height,
                     "bbox": _bbox_from_rect(bbox_rect) if bbox_rect else None,
                     "size_bytes": len(img_bytes),
+                    "_raw_bytes": img_bytes,  # kept for save_images_to_disk
                 }
                 if include_base64:
                     entry["base64_data"] = base64.b64encode(img_bytes).decode("ascii")
@@ -133,3 +140,59 @@ def extract_page_images(
         doc.close()
 
     return result
+
+
+def save_images_to_disk(
+    all_images: dict[int, list[dict[str, Any]]],
+    output_dir: str | Path,
+    doc_id: str,
+) -> dict[tuple[int, int], str]:
+    """Write extracted images to disk and return path mapping.
+
+    Parameters
+    ----------
+    all_images:
+        Output of :func:`extract_page_images` (must include ``_raw_bytes``).
+    output_dir:
+        Root directory for image storage (e.g. ``IMAGE_STORE_DIR``).
+    doc_id:
+        Unique document identifier used as the sub-folder name.
+
+    Returns
+    -------
+    dict mapping ``(page_number, image_index)`` -> absolute file path.
+    """
+    path_map: dict[tuple[int, int], str] = {}
+    base_dir = Path(output_dir) / doc_id
+
+    for page_num, images in sorted(all_images.items()):
+        page_dir = base_dir / f"page_{page_num}"
+        page_dir.mkdir(parents=True, exist_ok=True)
+
+        for idx, img in enumerate(images):
+            raw_bytes = img.get("_raw_bytes")
+            if raw_bytes is None:
+                logger.warning(
+                    "No _raw_bytes for page %d image %d — skipping disk save",
+                    page_num, idx,
+                )
+                continue
+
+            ext = img.get("format", "png")
+            filename = f"img_{idx}.{ext}"
+            file_path = page_dir / filename
+            file_path.write_bytes(raw_bytes)
+            path_map[(page_num, idx)] = str(file_path.resolve())
+            logger.debug("Saved image: %s", file_path)
+
+    return path_map
+
+
+def strip_raw_bytes(all_images: dict[int, list[dict[str, Any]]]) -> None:
+    """Remove ``_raw_bytes`` from image dicts (call after saving to disk).
+
+    This avoids carrying large byte blobs through the rest of the pipeline.
+    """
+    for images in all_images.values():
+        for img in images:
+            img.pop("_raw_bytes", None)

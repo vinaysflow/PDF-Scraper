@@ -12,8 +12,8 @@
    - Default workers: **5** (override with env `VLM_WORKERS`, e.g. `VLM_WORKERS=10`).
    - Keep `VLM_WORKERS` within your OpenAI rate limits (RPM/TPM) to avoid throttling.
 
-3. **Tika + PDF render in parallel** (`app/extract.py`)
-   - With `--force-ocr`, Tika extraction and PDF→image rendering run concurrently.
+3. **Native + PDF render in parallel** (`app/extract.py`)
+   - With `--force-ocr`, native extraction and PDF→image rendering run concurrently.
    - OCR then uses the pre-rendered images and does not render again, so wall time is reduced by the overlap.
 
 ## Environment variables
@@ -27,7 +27,7 @@
 
 - **OCR:** With 4 workers, a 31-page run can be ~3–4× faster than sequential (depending on CPU and layout).
 - **Diagrams:** With 5 workers, 15 figures can complete in roughly 3 batches instead of 15 sequential calls.
-- **Tika + render:** Saves roughly `min(tika_time, render_time)` when `--force-ocr` is used.
+- **Native + render:** Saves roughly `min(native_time, render_time)` when `--force-ocr` is used.
 
 ## Tuning tips
 

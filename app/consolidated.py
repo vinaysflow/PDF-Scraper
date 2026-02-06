@@ -6,6 +6,7 @@ from .schema import (
     ConsolidatedReport,
     ExtractionResult,
     HighQualityDiagram,
+    HighQualityImage,
     HighQualityPage,
     QualitySummary,
 )
@@ -73,6 +74,28 @@ def build_consolidated_report(
                     )
                 )
 
+    # Collect image metadata from approved pages (no base64 data)
+    high_quality_images: list[HighQualityImage] = []
+    approved_page_set = set(
+        quality_summary.approved_page_numbers if quality_summary else []
+    )
+    for page in result.pages:
+        if page.page_number not in approved_page_set:
+            continue
+        for idx, img in enumerate(page.images):
+            high_quality_images.append(
+                HighQualityImage(
+                    page_number=page.page_number,
+                    index=idx,
+                    format=img.format,
+                    width=img.width,
+                    height=img.height,
+                    bbox=img.bbox,
+                    image_url=img.image_url,
+                    image_path=img.image_path,
+                )
+            )
+
     high_quality_diagrams: list[HighQualityDiagram] = []
     if result.diagrams:
         for dr in result.diagrams.diagrams:
@@ -102,6 +125,7 @@ def build_consolidated_report(
         document=doc,
         quality_summary=quality_summary,
         high_quality_pages=high_quality_pages,
+        high_quality_images=high_quality_images,
         high_quality_diagrams=high_quality_diagrams,
         full_text_preview=full_text_preview,
         stats=stats,

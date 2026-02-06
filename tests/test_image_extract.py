@@ -9,7 +9,11 @@ import fitz  # PyMuPDF
 import pytest
 from PIL import Image
 
-from app.providers.image_extract import extract_page_images
+from app.providers.image_extract import (
+    extract_page_images,
+    save_images_to_disk,
+    strip_raw_bytes,
+)
 
 
 def _create_pdf_with_image(tmp_dir: Path) -> Path:
@@ -53,6 +57,7 @@ class TestExtractPageImages:
 
     def test_extracts_image_from_page(self, tmp_path: Path):
         pdf_path = _create_pdf_with_image(tmp_path)
+        # Default is include_base64=False now
         result = extract_page_images(pdf_path)
 
         # Page 1 should have at least one image
@@ -63,9 +68,22 @@ class TestExtractPageImages:
         assert img["format"] in ("png", "jpeg", "jpg")
         assert img["width"] >= 50
         assert img["height"] >= 50
+        assert img["xref"] is not None
+        # _raw_bytes should always be present for downstream save-to-disk
+        assert "_raw_bytes" in img
+        assert isinstance(img["_raw_bytes"], bytes)
+        # base64 should NOT be present by default
+        assert img.get("base64_data") is None
+
+    def test_extracts_image_with_base64(self, tmp_path: Path):
+        pdf_path = _create_pdf_with_image(tmp_path)
+        result = extract_page_images(pdf_path, include_base64=True)
+
+        assert 1 in result
+        assert len(result[1]) >= 1
+        img = result[1][0]
         assert "base64_data" in img
         assert img["base64_data"]  # non-empty
-        assert img["xref"] is not None
 
     def test_page_without_images_returns_empty(self, tmp_path: Path):
         pdf_path = _create_pdf_with_image(tmp_path)
@@ -106,3 +124,65 @@ class TestExtractPageImages:
             for img in page_images:
                 all_xrefs.append(img["xref"])
         assert len(all_xrefs) == len(set(all_xrefs)), "Duplicate xrefs found"
+
+
+class TestSaveImagesToDisk:
+    """Tests for save_images_to_disk and strip_raw_bytes."""
+
+    def test_saves_images_to_correct_paths(self, tmp_path: Path):
+        pdf_path = _create_pdf_with_image(tmp_path)
+        result = extract_page_images(pdf_path)
+
+        output_dir = tmp_path / "image_store"
+        doc_id = "test-doc-123"
+        path_map = save_images_to_disk(result, output_dir, doc_id)
+
+        # Should have at least one image saved
+        assert len(path_map) >= 1
+
+        for (page_num, idx), file_path in path_map.items():
+            p = Path(file_path)
+            assert p.exists(), f"Image file does not exist: {file_path}"
+            assert p.stat().st_size > 0, f"Image file is empty: {file_path}"
+            # Verify directory structure
+            assert doc_id in str(p)
+            assert f"page_{page_num}" in str(p)
+            assert f"img_{idx}" in p.name
+
+    def test_creates_directory_structure(self, tmp_path: Path):
+        pdf_path = _create_pdf_with_image(tmp_path)
+        result = extract_page_images(pdf_path)
+
+        output_dir = tmp_path / "image_store"
+        doc_id = "struct-test"
+        save_images_to_disk(result, output_dir, doc_id)
+
+        # Verify directories were created
+        doc_dir = output_dir / doc_id
+        assert doc_dir.exists()
+        page_dir = doc_dir / "page_1"
+        assert page_dir.exists()
+
+    def test_returns_empty_for_no_images(self, tmp_path: Path):
+        pdf_path = _create_pdf_text_only(tmp_path)
+        result = extract_page_images(pdf_path)
+
+        output_dir = tmp_path / "image_store"
+        path_map = save_images_to_disk(result, output_dir, "no-images")
+
+        assert path_map == {}
+
+    def test_strip_raw_bytes_removes_bytes(self, tmp_path: Path):
+        pdf_path = _create_pdf_with_image(tmp_path)
+        result = extract_page_images(pdf_path)
+
+        # Verify raw bytes exist before stripping
+        if result.get(1):
+            assert "_raw_bytes" in result[1][0]
+
+        strip_raw_bytes(result)
+
+        # Verify raw bytes are gone
+        for images in result.values():
+            for img in images:
+                assert "_raw_bytes" not in img

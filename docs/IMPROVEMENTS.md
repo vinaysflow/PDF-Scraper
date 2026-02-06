@@ -92,7 +92,7 @@ Re-run with `--quality-target 90` to see all 31 pages approved (or 30 if you dis
 
 ## Quick wins (already done)
 
-- Phase 1+2 (layout config + skip tika_similarity when Tika chosen) → page 1 approved.
+- Phase 1+2 (layout config + skip native_similarity when native chosen) → page 1 approved.
 - Preserve layout on retry + treat None as "text" → layout-based relaxation (e.g. 0.88 for text) applies; page 6 may approve on rerun.
 
 ## Suggested order

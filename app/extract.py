@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -9,9 +10,21 @@ from pathlib import Path
 from typing import Dict
 from uuid import uuid4
 
+logger = logging.getLogger(__name__)
+
 from pdf2image import convert_from_path
 
-from .config import EXTRACT_IMAGES, EXTRACT_LAYOUT, EXTRACT_MATH, EXTRACT_TABLES, OCR_ENGINE, SAFE_BATCH_PAGES, SAFE_MODE
+from .config import (
+    EXTRACT_IMAGES,
+    EXTRACT_LAYOUT,
+    EXTRACT_MATH,
+    EXTRACT_TABLES,
+    IMAGE_STORE_DIR,
+    INCLUDE_BASE64_IMAGES,
+    OCR_ENGINE,
+    SAFE_BATCH_PAGES,
+    SAFE_MODE,
+)
 from .ocr import extract_with_ocr, rerun_page_ocr
 from .pdf_text import (
     extract_layout_blocks,
@@ -24,6 +37,7 @@ from .schema import (
     ExtractionResult,
     LayoutBlock,
     Page,
+    PageConfidenceSummary,
     PageEquation,
     PageImage,
     PageTable,
@@ -42,12 +56,12 @@ from .utils import (
     validate_pdf_path,
 )
 
-MIN_TIKA_CHARS = 50
+MIN_NATIVE_CHARS = 50
 MIN_CONFIDENCE_FOR_AVG = 92.0
 QUALITY_MIN_AVG_CONFIDENCE = 93.0
 QUALITY_MAX_LOW_CONF_RATIO = 0.5
 QUALITY_MIN_PASS_SIMILARITY = 0.85
-QUALITY_MIN_TIKA_SIMILARITY = 0.85
+QUALITY_MIN_NATIVE_SIMILARITY = 0.85
 QUALITY_RETRIES_DEFAULT = 2
 DECISION_ACCURACY_THRESHOLD = 0.8
 
@@ -57,15 +71,15 @@ OCR_UNRELIABLE_LOW_CONF = 0.75   # 75%+ tokens below confidence threshold
 OCR_UNRELIABLE_DUAL_PASS = 0.25  # two OCR passes agree < 25%
 
 # Optional quality target (e.g. 90) overrides: min_avg_confidence, max_low_conf_ratio,
-# min_pass_similarity, min_tika_similarity, decision_accuracy_threshold
+# min_pass_similarity, min_native_similarity, decision_accuracy_threshold
 QUALITY_TARGET_OVERRIDES: dict[int, dict] = {
     90: {
         "min_avg_confidence": 90.0,
         "max_low_conf_ratio": 0.6,
         "min_pass_similarity": 0.90,
-        "min_tika_similarity": 0.90,
+        "min_native_similarity": 0.90,
         "decision_accuracy_threshold": 0.9,
-        "skip_tika_similarity_gate_when_tika_selected": True,
+        "skip_native_similarity_gate_when_native_selected": True,
     },
 }
 
@@ -74,13 +88,13 @@ LAYOUT_QUALITY_OVERRIDES: dict[str, dict] = {
     "table": {
         "max_low_conf_ratio": 0.8,
         "min_pass_similarity": 0.36,
-        "min_tika_similarity": 0.0,
+        "min_native_similarity": 0.0,
         "min_avg_confidence": 90.0,
     },
     "noisy": {
         "max_low_conf_ratio": 0.85,
         "min_pass_similarity": 0.35,
-        "min_tika_similarity": 0.0,
+        "min_native_similarity": 0.0,
         "min_avg_confidence": 90.0,
     },
     "text": {
@@ -97,42 +111,63 @@ DIAGRAM_HEAVY_OVERRIDES = {
 
 
 # ---------------------------------------------------------------------------
+# Text sanity check
+# ---------------------------------------------------------------------------
+def _text_looks_sane(text: str) -> bool:
+    """Reject garbage text: must have reasonable word patterns.
+
+    Returns False if the text looks like OCR noise, binary data, or encoding
+    garbage — even if it exceeds the minimum character threshold.
+    """
+    words = text.split()
+    if len(words) < 3:
+        return False
+    avg_word_len = sum(len(w) for w in words) / len(words)
+    if avg_word_len < 1.5 or avg_word_len > 25:
+        return False
+    alnum_ratio = sum(1 for c in text if c.isalnum() or c.isspace()) / max(len(text), 1)
+    if alnum_ratio < 0.4:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Page helpers
 # ---------------------------------------------------------------------------
 def _build_pages(
     page_count: int,
-    tika_pages: Dict[int, str],
+    native_pages: Dict[int, str],
     ocr_pages: Dict[int, dict],
     ocr_used: set[int],
-    prefer_tika_text: bool,
+    prefer_native_text: bool,
     selected_sources: dict[int, str] | None,
 ) -> list[Page]:
     pages: list[Page] = []
     for page_number in range(1, page_count + 1):
-        tika_text = tika_pages.get(page_number, "")
+        native_text = native_pages.get(page_number, "")
         selected_source = (
             selected_sources.get(page_number) if selected_sources else None
         )
         if page_number in ocr_used:
             ocr_page = ocr_pages.get(page_number, {})
-            use_tika_text = (
-                selected_source == "tika"
-                or (prefer_tika_text and bool(tika_text.strip()))
+            use_native_text = (
+                selected_source == "native"
+                or (prefer_native_text and bool(native_text.strip()))
             )
             pages.append(
                 Page(
                     page_number=page_number,
-                    source="tika" if use_tika_text else "ocr",
-                    text=tika_text if use_tika_text else ocr_page.get("text", ""),
-                    tokens=[] if use_tika_text else ocr_page.get("tokens", []),
+                    source="native" if use_native_text else "ocr",
+                    text=native_text if use_native_text else ocr_page.get("text", ""),
+                    tokens=[] if use_native_text else ocr_page.get("tokens", []),
                 )
             )
         else:
             pages.append(
                 Page(
                     page_number=page_number,
-                    source="tika",
-                    text=tika_text,
+                    source="native",
+                    text=native_text,
                     tokens=[],
                 )
             )
@@ -141,13 +176,46 @@ def _build_pages(
 
 def _calculate_stats(pages: list[Page]) -> Stats:
     total_tokens = sum(len(page.tokens) for page in pages)
-    confidences: list[float] = []
+    all_filtered: list[float] = []
+    confidence_pages: list[PageConfidenceSummary] = []
+
     for page in pages:
+        page_all: list[float] = []
+        page_filtered: list[float] = []
         for token in page.tokens:
+            page_all.append(token.confidence)
             if token.confidence >= MIN_CONFIDENCE_FOR_AVG:
-                confidences.append(token.confidence)
-    avg_conf = round(sum(confidences) / len(confidences), 4) if confidences else None
-    return Stats(total_tokens=total_tokens, avg_confidence=avg_conf)
+                page_filtered.append(token.confidence)
+
+        all_filtered.extend(page_filtered)
+        low_count = len(page_all) - len(page_filtered)
+        confidence_pages.append(
+            PageConfidenceSummary(
+                page_number=page.page_number,
+                total_tokens=len(page_all),
+                raw_avg_confidence=(
+                    round(sum(page_all) / len(page_all), 4) if page_all else None
+                ),
+                filtered_avg_confidence=(
+                    round(sum(page_filtered) / len(page_filtered), 4)
+                    if page_filtered
+                    else None
+                ),
+                low_conf_token_count=low_count,
+                low_conf_ratio=(
+                    round(low_count / len(page_all), 4) if page_all else None
+                ),
+            )
+        )
+
+    avg_conf = (
+        round(sum(all_filtered) / len(all_filtered), 4) if all_filtered else None
+    )
+    return Stats(
+        total_tokens=total_tokens,
+        avg_confidence=avg_conf,
+        confidence_pages=confidence_pages,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +223,7 @@ def _calculate_stats(pages: list[Page]) -> Stats:
 # ---------------------------------------------------------------------------
 def _page_quality(
     page_number: int,
-    tika_text: str,
+    native_text: str,
     ocr_page: dict | None,
     retry_attempts: int,
     best_strategy: dict | None,
@@ -173,11 +241,11 @@ def _page_quality(
     pass_similarity = ocr_page.get("pass_similarity") if ocr_page else None
     ocr_text = ocr_page.get("text", "") if ocr_page else ""
     layout = ocr_page.get("layout") if ocr_page else None
-    tika_similarity = (
-        similarity_ratio(tika_text, ocr_text) if tika_text and ocr_text else None
+    native_similarity = (
+        similarity_ratio(native_text, ocr_text) if native_text and ocr_text else None
     )
-    if tika_similarity is not None:
-        accuracy_score = tika_similarity
+    if native_similarity is not None:
+        accuracy_score = native_similarity
     elif avg_conf is not None:
         accuracy_score = avg_conf / 100
     else:
@@ -193,17 +261,17 @@ def _page_quality(
         selected_source = "ocr"
     else:
         decision = "A"
-        selected_source = "tika" if tika_text.strip() else "ocr"
+        selected_source = "native" if native_text.strip() else "ocr"
 
     if quality_overrides:
         max_low_conf_ratio = quality_overrides.get("max_low_conf_ratio", QUALITY_MAX_LOW_CONF_RATIO)
         min_pass_similarity = quality_overrides.get("min_pass_similarity", QUALITY_MIN_PASS_SIMILARITY)
-        min_tika_similarity = quality_overrides.get("min_tika_similarity", QUALITY_MIN_TIKA_SIMILARITY)
+        min_native_similarity = quality_overrides.get("min_native_similarity", QUALITY_MIN_NATIVE_SIMILARITY)
         min_avg_confidence = quality_overrides.get("min_avg_confidence", QUALITY_MIN_AVG_CONFIDENCE)
     else:
         max_low_conf_ratio = QUALITY_MAX_LOW_CONF_RATIO
         min_pass_similarity = QUALITY_MIN_PASS_SIMILARITY
-        min_tika_similarity = QUALITY_MIN_TIKA_SIMILARITY
+        min_native_similarity = QUALITY_MIN_NATIVE_SIMILARITY
         min_avg_confidence = QUALITY_MIN_AVG_CONFIDENCE
 
     layout_for_gates = layout or "text"
@@ -213,8 +281,8 @@ def _page_quality(
             max_low_conf_ratio = max(max_low_conf_ratio, value)
         elif key == "min_pass_similarity":
             min_pass_similarity = min(min_pass_similarity, value)
-        elif key == "min_tika_similarity":
-            min_tika_similarity = min(min_tika_similarity, value)
+        elif key == "min_native_similarity":
+            min_native_similarity = min(min_native_similarity, value)
         elif key == "min_avg_confidence":
             min_avg_confidence = min(min_avg_confidence, value)
 
@@ -231,14 +299,17 @@ def _page_quality(
             elif key == "min_pass_similarity":
                 min_pass_similarity = min(min_pass_similarity, value)
 
-    skip_tika_gate_when_tika = bool(
-        quality_overrides and quality_overrides.get("skip_tika_similarity_gate_when_tika_selected")
+    skip_native_gate_when_native = bool(
+        quality_overrides and quality_overrides.get("skip_native_similarity_gate_when_native_selected")
     )
 
     # ------------------------------------------------------------------
     # Source-aware quality bypass (Tier 1 intelligence)
     # ------------------------------------------------------------------
-    tika_sufficient = len(tika_text.strip()) >= MIN_TIKA_CHARS
+    native_sufficient = (
+        len(native_text.strip()) >= MIN_NATIVE_CHARS
+        and _text_looks_sane(native_text)
+    )
     ocr_total_failure = avg_conf is None  # zero tokens above confidence threshold
     ocr_unreliable = (
         low_conf_ratio is not None and low_conf_ratio > OCR_UNRELIABLE_LOW_CONF
@@ -246,19 +317,19 @@ def _page_quality(
     )
     page_type = "text"
 
-    if selected_source == "tika" and tika_sufficient:
-        # Tika extracted good text and was selected. OCR metrics are irrelevant
+    if selected_source == "native" and native_sufficient:
+        # Native extracted good text and was selected. OCR metrics are irrelevant
         # to the final output — auto-approve.
-        page_type = "tika_sufficient"
+        page_type = "native_sufficient"
         failed: list[str] = []
-    elif (ocr_total_failure or ocr_unreliable) and tika_sufficient:
-        # OCR failed or is unreliable, but Tika has good text. Fall back to Tika.
-        page_type = "tika_fallback"
-        selected_source = "tika"
+    elif (ocr_total_failure or ocr_unreliable) and native_sufficient:
+        # OCR failed or is unreliable, but native has good text. Fall back to native.
+        page_type = "native_fallback"
+        selected_source = "native"
         decision = "A"
         failed: list[str] = []
     elif ocr_total_failure or ocr_unreliable:
-        # OCR failed and no substantial Tika text — page is likely figure/diagram.
+        # OCR failed and no substantial native text — page is likely figure/diagram.
         # This is expected; approve with a "figure" flag.
         page_type = "figure"
         failed: list[str] = []
@@ -272,12 +343,12 @@ def _page_quality(
         if pass_similarity is None or pass_similarity < min_pass_similarity:
             failed.append("dual_pass_similarity")
         if (
-            not (skip_tika_gate_when_tika and selected_source == "tika")
-            and tika_similarity is not None
-            and min_tika_similarity > 0
-            and tika_similarity < min_tika_similarity
+            not (skip_native_gate_when_native and selected_source == "native")
+            and native_similarity is not None
+            and min_native_similarity > 0
+            and native_similarity < min_native_similarity
         ):
-            failed.append("tika_similarity")
+            failed.append("native_similarity")
 
     return QualityGate(
         page_number=page_number,
@@ -287,7 +358,7 @@ def _page_quality(
         avg_confidence=round(avg_conf, 4) if avg_conf is not None else None,
         low_conf_ratio=round(low_conf_ratio, 4) if low_conf_ratio is not None else None,
         dual_pass_similarity=round(pass_similarity, 4) if pass_similarity is not None else None,
-        tika_similarity=round(tika_similarity, 4) if tika_similarity is not None else None,
+        native_similarity=round(native_similarity, 4) if native_similarity is not None else None,
         failed_gates=failed,
         retry_attempts=retry_attempts,
         best_strategy=best_strategy,
@@ -305,17 +376,17 @@ def _quality_summary(
         min_avg = quality_overrides.get("min_avg_confidence", QUALITY_MIN_AVG_CONFIDENCE)
         max_low = quality_overrides.get("max_low_conf_ratio", QUALITY_MAX_LOW_CONF_RATIO)
         min_pass = quality_overrides.get("min_pass_similarity", QUALITY_MIN_PASS_SIMILARITY)
-        min_tika = quality_overrides.get("min_tika_similarity", QUALITY_MIN_TIKA_SIMILARITY)
+        min_native = quality_overrides.get("min_native_similarity", QUALITY_MIN_NATIVE_SIMILARITY)
     else:
         min_avg, max_low = QUALITY_MIN_AVG_CONFIDENCE, QUALITY_MAX_LOW_CONF_RATIO
-        min_pass, min_tika = QUALITY_MIN_PASS_SIMILARITY, QUALITY_MIN_TIKA_SIMILARITY
+        min_pass, min_native = QUALITY_MIN_PASS_SIMILARITY, QUALITY_MIN_NATIVE_SIMILARITY
     return QualityResult(
         status=status,
         strict=strict,
         min_avg_confidence=min_avg,
         max_low_conf_ratio=max_low,
         min_dual_pass_similarity=min_pass,
-        min_tika_similarity=min_tika,
+        min_native_similarity=min_native,
         pages=pages,
     )
 
@@ -367,8 +438,28 @@ def extract_pdf(
     ocr_lang: str = "eng",
     tessdata_path: str | None = None,
     extract_diagrams: bool = False,
+    include_base64: bool | None = None,
+    image_output_dir: str | None = None,
 ) -> ExtractionResult:
-    """Extract text and token-level OCR from a PDF. Optionally run diagram extraction + VLM."""
+    """Extract text and token-level OCR from a PDF. Optionally run diagram extraction + VLM.
+
+    Parameters
+    ----------
+    include_base64:
+        If True, embed base64-encoded image data in the output JSON.
+        Defaults to the ``INCLUDE_BASE64_IMAGES`` env var (usually False).
+    image_output_dir:
+        Override directory for saving extracted images. Defaults to
+        ``IMAGE_STORE_DIR`` from config.
+    """
+
+    # Resolve defaults for image handling
+    if include_base64 is None:
+        include_base64 = INCLUDE_BASE64_IMAGES
+    if image_output_dir is None:
+        image_output_dir = IMAGE_STORE_DIR
+
+    doc_id = str(uuid4())
 
     quality_overrides = QUALITY_TARGET_OVERRIDES.get(quality_target) if quality_target else None
     validated_path = validate_pdf_path(pdf_path)
@@ -392,7 +483,7 @@ def extract_pdf(
         ocr_required = set(range(1, page_count + 1))
     else:
         for pg in native_pages:
-            if not page_has_text(pg, min_chars=MIN_TIKA_CHARS):
+            if not page_has_text(pg, min_chars=MIN_NATIVE_CHARS):
                 ocr_required.add(pg["page_number"])
 
     # -------------------------------------------------------------------
@@ -472,13 +563,13 @@ def extract_pdf(
     if ocr_required:
         prefer_native_text = force_ocr  # when force_ocr, prefer native text over OCR
         pages = _build_pages(page_count, native_page_map, ocr_pages, ocr_required,
-                             prefer_tika_text=prefer_native_text, selected_sources=None)
+                             prefer_native_text=prefer_native_text, selected_sources=None)
         method = "hybrid" if not force_ocr else "ocr"
         engine = f"pymupdf+{ocr_engine_name}" if not force_ocr else ocr_engine_name
         full_text = "\n".join(page.text for page in pages if page.text).strip()
     else:
         pages = _build_pages(page_count, native_page_map, {}, set(),
-                             prefer_tika_text=False, selected_sources=None)
+                             prefer_native_text=False, selected_sources=None)
         method = "native"
         engine = "pymupdf"
         full_text = native_text.strip()
@@ -560,11 +651,11 @@ def extract_pdf(
     if ocr_required:
         prefer_native_text = force_ocr
         pages = _build_pages(page_count, native_page_map, ocr_pages, ocr_required,
-                             prefer_tika_text=prefer_native_text, selected_sources=selected_sources)
+                             prefer_native_text=prefer_native_text, selected_sources=selected_sources)
         full_text = "\n".join(page.text for page in pages if page.text).strip()
     else:
         pages = _build_pages(page_count, native_page_map, {}, set(),
-                             prefer_tika_text=False, selected_sources=selected_sources)
+                             prefer_native_text=False, selected_sources=selected_sources)
         full_text = native_text.strip()
 
     stats = _calculate_stats(pages)
@@ -572,27 +663,61 @@ def extract_pdf(
     # -------------------------------------------------------------------
     # Enrichment: page dimensions, images, layout blocks (provider-based)
     # -------------------------------------------------------------------
+    enrichment_warnings: list[str] = []
+
     try:
         page_dims = extract_page_dimensions(validated_path)
         for page in pages:
             w, h = page_dims.get(page.page_number, (None, None))
             page.page_width = w
             page.page_height = h
-    except Exception:
-        pass  # non-critical — leave dimensions as None
+    except Exception as exc:
+        msg = f"page_dimensions_failed: {exc}"
+        logger.warning(msg)
+        enrichment_warnings.append(msg)
 
     if EXTRACT_IMAGES:
         try:
-            from .providers.image_extract import extract_page_images
+            from .providers.image_extract import (
+                extract_page_images,
+                save_images_to_disk,
+                strip_raw_bytes,
+            )
 
             all_images = extract_page_images(
-                validated_path, page_numbers=None, include_base64=True,
+                validated_path, page_numbers=None, include_base64=include_base64,
             )
+
+            # Save images to disk and get path mapping
+            path_map = save_images_to_disk(all_images, image_output_dir, doc_id)
+
+            # Build PageImage objects with image_url and image_path
             for page in pages:
                 raw_imgs = all_images.get(page.page_number, [])
-                page.images = [PageImage(**img) for img in raw_imgs]
-        except Exception:
-            pass  # non-critical — images remain empty lists
+                page_images: list[PageImage] = []
+                for idx, img in enumerate(raw_imgs):
+                    file_path = path_map.get((page.page_number, idx))
+                    ext = img.get("format", "png")
+                    image_url = (
+                        f"/api/images/{doc_id}/page_{page.page_number}/img_{idx}.{ext}"
+                    )
+                    # Remove _raw_bytes before passing to Pydantic
+                    img.pop("_raw_bytes", None)
+                    page_images.append(
+                        PageImage(
+                            **img,
+                            image_url=image_url,
+                            image_path=file_path,
+                        )
+                    )
+                page.images = page_images
+
+            # Clean up raw bytes from the dict (in case it's referenced elsewhere)
+            strip_raw_bytes(all_images)
+        except Exception as exc:
+            msg = f"image_extraction_failed: {exc}"
+            logger.warning(msg)
+            enrichment_warnings.append(msg)
 
     if EXTRACT_LAYOUT:
         try:
@@ -600,8 +725,10 @@ def extract_pdf(
             for page in pages:
                 raw_blocks = all_blocks.get(page.page_number, [])
                 page.layout_blocks = [LayoutBlock(**b) for b in raw_blocks]
-        except Exception:
-            pass  # non-critical — layout_blocks remain empty lists
+        except Exception as exc:
+            msg = f"layout_extraction_failed: {exc}"
+            logger.warning(msg)
+            enrichment_warnings.append(msg)
 
     if EXTRACT_TABLES:
         try:
@@ -612,8 +739,10 @@ def extract_pdf(
                 for page in pages:
                     raw_tables = all_tables.get(page.page_number, [])
                     page.tables = [PageTable(**t) for t in raw_tables]
-        except Exception:
-            pass  # non-critical — tables remain empty lists
+        except Exception as exc:
+            msg = f"table_extraction_failed: {exc}"
+            logger.warning(msg)
+            enrichment_warnings.append(msg)
 
     if EXTRACT_MATH and EXTRACT_IMAGES:
         # Math OCR requires images to be extracted first (needs base64 data)
@@ -626,8 +755,10 @@ def extract_pdf(
                         img_dicts = [img.model_dump() for img in page.images]
                         eqs = recognize_equations_from_page_images(img_dicts)
                         page.equations = [PageEquation(**eq) for eq in eqs]
-        except Exception:
-            pass  # non-critical — equations remain empty lists
+        except Exception as exc:
+            msg = f"math_ocr_failed: {exc}"
+            logger.warning(msg)
+            enrichment_warnings.append(msg)
 
     diagrams_result = None
     if extract_diagrams:
@@ -636,11 +767,14 @@ def extract_pdf(
             diagrams_result = run_diagram_pipeline(
                 validated_path, max_pages=max_pages, use_vlm=True,
             )
-        except Exception:
+        except Exception as exc:
+            msg = f"diagram_pipeline_failed: {exc}"
+            logger.warning(msg)
+            enrichment_warnings.append(msg)
             diagrams_result = None
 
     return ExtractionResult(
-        doc_id=str(uuid4()),
+        doc_id=doc_id,
         filename=validated_path.name,
         ingested_at=datetime.now(timezone.utc),
         extraction=ExtractionMetadata(
@@ -654,4 +788,5 @@ def extract_pdf(
         stats=stats,
         quality=quality,
         diagrams=diagrams_result,
+        enrichment_warnings=enrichment_warnings,
     )

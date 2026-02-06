@@ -1,6 +1,6 @@
 """Native PDF text extraction using PyMuPDF (fitz).
 
-Replaces Apache Tika: no JVM, per-page text, lightweight.
+Native PDF text extraction: no JVM, per-page text, lightweight.
 Also provides layout-block extraction for page reconstruction.
 """
 

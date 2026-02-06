@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 
 from .extract import extract_pdf
 from .utils import ExtractionError
@@ -24,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force-ocr",
         action="store_true",
-        help="Always run OCR (even if Tika succeeds).",
+        help="Always run OCR (even if native extraction succeeds).",
     )
     parser.add_argument(
         "--strict-quality",
@@ -63,11 +65,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extract figures and run VLM diagram reading (requires OPENAI_API_KEY for descriptions).",
     )
     parser.add_argument(
+        "--include-base64",
+        action="store_true",
+        help="Embed base64-encoded image data in the JSON output (off by default).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Directory for saving extracted images. "
+             "If set, images go into DIR/<stem>_images/. "
+             "Defaults to IMAGE_STORE_DIR env var.",
+    )
+    parser.add_argument(
         "--consolidated-output",
         type=str,
         default=None,
         metavar="FILE",
         help="Write a consolidated high-quality report (quality + approved pages + diagram descriptions) to FILE.",
+    )
+    parser.add_argument(
+        "--question-bank",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Generate a question bank JSON and write to FILE. "
+             "Parses questions, associates images, and optionally enriches with LLM.",
+    )
+    parser.add_argument(
+        "--no-llm-enrich",
+        action="store_true",
+        help="Skip LLM enrichment when generating question bank (uses rule-based fallback).",
     )
     return parser
 
@@ -79,6 +108,12 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        # Resolve image output directory for CLI usage
+        image_output_dir = args.output_dir
+        if image_output_dir:
+            stem = Path(args.pdf_path).stem
+            image_output_dir = os.path.join(image_output_dir, f"{stem}_images")
+
         result = extract_pdf(
             args.pdf_path,
             dpi=args.dpi,
@@ -90,12 +125,23 @@ def main() -> int:
             ocr_lang=args.ocr_lang,
             tessdata_path=args.tessdata_path,
             extract_diagrams=args.extract_diagrams,
+            include_base64=args.include_base64,
+            image_output_dir=image_output_dir,
         )
         if args.consolidated_output:
             from .consolidated import build_consolidated_report
             report = build_consolidated_report(result, full_output_path=None)
             with open(args.consolidated_output, "w") as f:
                 f.write(report.model_dump_json(indent=2))
+        if args.question_bank:
+            from .question_bank import build_question_bank
+            qbank = build_question_bank(
+                result,
+                enrich_with_llm=not args.no_llm_enrich,
+            )
+            with open(args.question_bank, "w") as f:
+                f.write(qbank.model_dump_json(indent=2))
+            print(f"Question bank written to {args.question_bank}", file=sys.stderr)
         print(result.model_dump_json(indent=2))
         return 0
     except ExtractionError as exc:

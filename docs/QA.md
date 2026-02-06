@@ -52,7 +52,7 @@ SAMPLE_PDF="/path/to/sample.pdf" python -m unittest tests.qa_pipeline.TestOCRPar
 
 - **End-to-end with diagrams**: Full pipeline with `--extract-diagrams` and VLM (requires `OPENAI_API_KEY`); spot-check consolidated report and diagram descriptions.
 - **Quality retries**: Pages that fail gates and get retried with different DPI/strategy; confirm retry count and final status in output.
-- **Tika + render parallel**: With `--force-ocr`, Tika and PDF render run in parallel; no dedicated test; rely on full run timing and success.
+- **Native + render parallel**: With `--force-ocr`, native extraction and PDF render run in parallel; no dedicated test; rely on full run timing and success.
 - **Large PDFs**: 31-page run and beyond; performance and stability checked manually.
 
 ## Adding tests

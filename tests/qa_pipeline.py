@@ -58,11 +58,11 @@ class TestQualityGates(unittest.TestCase):
             "max_low_conf_ratio": 0.6,
             "min_pass_similarity": 0.9,
             "min_avg_confidence": 90.0,
-            "skip_tika_similarity_gate_when_tika_selected": True,
+            "skip_native_similarity_gate_when_native_selected": True,
         }
         gate = _page_quality(
             page_number=1,
-            tika_text="",
+            native_text="",
             ocr_page={
                 "text": "x",
                 "tokens": [{"confidence": 95.0}, {"confidence": 92.0}],
@@ -82,13 +82,13 @@ class TestQualityGates(unittest.TestCase):
             "max_low_conf_ratio": 0.6,
             "min_pass_similarity": 0.9,
             "min_avg_confidence": 90.0,
-            "skip_tika_similarity_gate_when_tika_selected": True,
+            "skip_native_similarity_gate_when_native_selected": True,
         }
         # 9 low-conf + 1 high-conf so low_conf_ratio = 0.9 (> 0.85), avg_conf = 95 (>= 90)
         tokens = [{"confidence": 50.0} for _ in range(9)] + [{"confidence": 95.0}]
         gate = _page_quality(
             page_number=1,
-            tika_text="",
+            native_text="",
             ocr_page={
                 "text": "x",
                 "tokens": tokens,
@@ -129,7 +129,7 @@ class TestConsolidatedReport(unittest.TestCase):
                 min_avg_confidence=90.0,
                 max_low_conf_ratio=0.6,
                 min_dual_pass_similarity=0.9,
-                min_tika_similarity=0.9,
+                min_native_similarity=0.9,
                 pages=[
                     QualityGate(page_number=1, status="approved", failed_gates=[]),
                     QualityGate(page_number=2, status="approved", failed_gates=[]),

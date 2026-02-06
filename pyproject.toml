@@ -11,7 +11,6 @@ dependencies = [
     "pytesseract==0.3.10",
     "pillow==10.2.0",
     "pdf2image==1.17.0",
-    "tika==2.6.0",
     "pydantic==2.6.1",
     "opencv-python==4.11.0.86",
     "pymupdf>=1.24.0",
@@ -19,6 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 diagrams = [
     "openai>=1.12.0",
+]
+db = [
+    "supabase>=2.0.0",
 ]
 
 [tool.setuptools.packages.find]

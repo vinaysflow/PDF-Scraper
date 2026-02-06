@@ -17,7 +17,7 @@ def _make_result(**overrides) -> dict:
         "pages": [
             {
                 "page_number": 1,
-                "source": "tika",
+                "source": "native",
                 "text": "Hello World",
                 "tokens": [],
                 "images": [],
@@ -51,7 +51,7 @@ class TestReconstructHtml:
             pages=[
                 {
                     "page_number": 1,
-                    "source": "tika",
+                    "source": "native",
                     "text": "Test heading",
                     "tokens": [],
                     "images": [],
@@ -80,7 +80,7 @@ class TestReconstructHtml:
             pages=[
                 {
                     "page_number": 1,
-                    "source": "tika",
+                    "source": "native",
                     "text": "",
                     "tokens": [],
                     "images": [
@@ -109,7 +109,7 @@ class TestReconstructHtml:
             pages=[
                 {
                     "page_number": 1,
-                    "source": "tika",
+                    "source": "native",
                     "text": "No dims",
                     "tokens": [],
                     "images": [],
@@ -127,7 +127,7 @@ class TestReconstructHtml:
             pages=[
                 {
                     "page_number": i,
-                    "source": "tika",
+                    "source": "native",
                     "text": f"Page {i} content",
                     "tokens": [],
                     "images": [],
@@ -148,7 +148,7 @@ class TestReconstructHtml:
             pages=[
                 {
                     "page_number": 1,
-                    "source": "tika",
+                    "source": "native",
                     "text": '<script>alert("xss")</script>',
                     "tokens": [],
                     "images": [],

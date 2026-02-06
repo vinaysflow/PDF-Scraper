@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -119,6 +122,43 @@ class TestAsyncEndpoints(unittest.TestCase):
     def test_poll_nonexistent_job_returns_404(self) -> None:
         r = self.client.get("/api/extract/async/nonexistent_id")
         self.assertEqual(r.status_code, 404)
+
+
+class TestImageServing(unittest.TestCase):
+    """Test the image serving endpoint GET /api/images/{doc_id}/{page}/{filename}."""
+
+    def setUp(self) -> None:
+        from app.api import app
+        self.client = TestClient(app, raise_server_exceptions=False)
+        # Create a temporary image store
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_missing_image_returns_404(self) -> None:
+        with patch("app.api.IMAGE_STORE_DIR", self.tmpdir):
+            r = self.client.get("/api/images/no-such-doc/page_1/img_0.png")
+            self.assertEqual(r.status_code, 404)
+
+    def test_existing_image_returns_200(self) -> None:
+        # Create a fake image file in the store
+        doc_dir = Path(self.tmpdir) / "test-doc" / "page_1"
+        doc_dir.mkdir(parents=True)
+        img_file = doc_dir / "img_0.png"
+        img_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+
+        with patch("app.api.IMAGE_STORE_DIR", self.tmpdir):
+            r = self.client.get("/api/images/test-doc/page_1/img_0.png")
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(len(r.content) > 0)
+
+    def test_path_traversal_blocked(self) -> None:
+        with patch("app.api.IMAGE_STORE_DIR", self.tmpdir):
+            r = self.client.get("/api/images/../../../etc/page_1/passwd")
+            # Should be 404 (no such file) or 403 (access denied)
+            self.assertIn(r.status_code, (403, 404))
 
 
 if __name__ == "__main__":

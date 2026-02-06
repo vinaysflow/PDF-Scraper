@@ -1,6 +1,6 @@
 # Deploying the upload UI on Vercel
 
-The **upload page** and a **proxy API route** can be deployed to Vercel. The actual PDF extraction (Tesseract, Tika, diagrams) runs on a **backend** you host elsewhere; Vercel only serves the UI and forwards requests.
+The **upload page** and a **proxy API route** can be deployed to Vercel. The actual PDF extraction (Tesseract, native, diagrams) runs on a **backend** you host elsewhere; Vercel only serves the UI and forwards requests.
 
 ## Why two parts?
 

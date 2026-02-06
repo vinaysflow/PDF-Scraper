@@ -24,7 +24,7 @@ from app.schema import (
 
 class TestBuildPages(unittest.TestCase):
     def test_ocr_used_pages_get_ocr_text(self) -> None:
-        tika_map = {1: "tika1", 2: "tika2"}
+        native_map = {1: "native1", 2: "native2"}
         # Tokens must match Token schema (bbox, confidence) when building Page
         tok = {"text": "a", "bbox": {"x": 0, "y": 0, "w": 5, "h": 5}, "confidence": 95.0}
         ocr_pages = {
@@ -33,10 +33,10 @@ class TestBuildPages(unittest.TestCase):
         }
         pages = _build_pages(
             page_count=2,
-            tika_pages=tika_map,
+            native_pages=native_map,
             ocr_pages=ocr_pages,
             ocr_used={1, 2},
-            prefer_tika_text=False,
+            prefer_native_text=False,
             selected_sources=None,
         )
         self.assertEqual(len(pages), 2)
@@ -45,49 +45,49 @@ class TestBuildPages(unittest.TestCase):
         self.assertEqual(len(pages[0].tokens), 1)
         self.assertEqual(pages[1].text, "ocr2")
 
-    def test_selected_source_tika_uses_tika_text(self) -> None:
-        tika_map = {1: "tika text"}
+    def test_selected_source_native_uses_native_text(self) -> None:
+        native_map = {1: "native text"}
         ocr_pages = {1: {"text": "ocr text", "tokens": []}}
         pages = _build_pages(
             page_count=1,
-            tika_pages=tika_map,
+            native_pages=native_map,
             ocr_pages=ocr_pages,
             ocr_used={1},
-            prefer_tika_text=False,
-            selected_sources={1: "tika"},
+            prefer_native_text=False,
+            selected_sources={1: "native"},
         )
-        self.assertEqual(pages[0].source, "tika")
-        self.assertEqual(pages[0].text, "tika text")
+        self.assertEqual(pages[0].source, "native")
+        self.assertEqual(pages[0].text, "native text")
         self.assertEqual(pages[0].tokens, [])
 
-    def test_not_ocr_used_gets_tika_only(self) -> None:
-        tika_map = {1: "only tika"}
+    def test_not_ocr_used_gets_native_only(self) -> None:
+        native_map = {1: "only native"}
         pages = _build_pages(
             page_count=1,
-            tika_pages=tika_map,
+            native_pages=native_map,
             ocr_pages={},
             ocr_used=set(),
-            prefer_tika_text=False,
+            prefer_native_text=False,
             selected_sources=None,
         )
-        self.assertEqual(pages[0].source, "tika")
-        self.assertEqual(pages[0].text, "only tika")
+        self.assertEqual(pages[0].source, "native")
+        self.assertEqual(pages[0].text, "only native")
         self.assertEqual(pages[0].tokens, [])
 
-    def test_prefer_tika_text_with_tika_content_uses_tika(self) -> None:
-        # When prefer_tika_text=True and tika has content, we use tika even if selected_source was ocr.
-        tika_map = {1: "tika"}
+    def test_prefer_native_text_with_native_content_uses_native(self) -> None:
+        # When prefer_native_text=True and native has content, we use native even if selected_source was ocr.
+        native_map = {1: "native"}
         ocr_pages = {1: {"text": "ocr", "tokens": []}}
         pages = _build_pages(
             page_count=1,
-            tika_pages=tika_map,
+            native_pages=native_map,
             ocr_pages=ocr_pages,
             ocr_used={1},
-            prefer_tika_text=True,
+            prefer_native_text=True,
             selected_sources={1: "ocr"},
         )
-        self.assertEqual(pages[0].source, "tika")
-        self.assertEqual(pages[0].text, "tika")
+        self.assertEqual(pages[0].source, "native")
+        self.assertEqual(pages[0].text, "native")
 
 
 class TestQualitySummary(unittest.TestCase):
@@ -114,7 +114,7 @@ class TestQualitySummary(unittest.TestCase):
             "min_avg_confidence": 90.0,
             "max_low_conf_ratio": 0.6,
             "min_pass_similarity": 0.9,
-            "min_tika_similarity": 0.9,
+            "min_native_similarity": 0.9,
         }
         q = _quality_summary(gates, strict=True, quality_overrides=overrides)
         self.assertEqual(q.min_avg_confidence, 90.0)
@@ -166,7 +166,7 @@ class TestExtractionSchema(unittest.TestCase):
         self.assertAlmostEqual(payload["stats"]["avg_confidence"], 95.0)
 
     def test_stats_with_no_tokens(self) -> None:
-        pages = [Page(page_number=1, source="tika", text="Text", tokens=[])]
+        pages = [Page(page_number=1, source="native", text="Text", tokens=[])]
         stats = _calculate_stats(pages)
         self.assertEqual(stats.total_tokens, 0)
         self.assertIsNone(stats.avg_confidence)

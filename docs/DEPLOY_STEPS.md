@@ -6,7 +6,7 @@ Follow these steps to get the upload page on Vercel and the extraction API runni
 
 ## Part 1: Deploy the backend (FastAPI + OCR)
 
-The backend needs **Tesseract**, **Poppler**, and **Java** (for Tika). Easiest is to use the included **Dockerfile**.
+The backend needs **Tesseract**, **Poppler**, and **Java** (for native extraction). Easiest is to use the included **Dockerfile**.
 
 ### Option A: Railway
 

@@ -50,6 +50,25 @@ EXTRACT_TABLES: bool = _env_bool("EXTRACT_TABLES")
 EXTRACT_MATH: bool = _env_bool("EXTRACT_MATH")
 OCR_ENGINE: str = os.environ.get("OCR_ENGINE", "tesseract").strip().lower()
 
+# ---------------------------------------------------------------------------
+# Image storage settings
+# ---------------------------------------------------------------------------
+IMAGE_STORE_DIR: str = os.environ.get(
+    "IMAGE_STORE_DIR", os.path.join(os.getcwd(), "image_store"),
+)
+INCLUDE_BASE64_IMAGES: bool = _env_bool("INCLUDE_BASE64_IMAGES")
+
+# ---------------------------------------------------------------------------
+# API authentication
+# ---------------------------------------------------------------------------
+API_KEY: str = os.environ.get("API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Supabase settings
+# ---------------------------------------------------------------------------
+SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
+
 
 def log_startup_config() -> None:
     """Print one startup line summarising active configuration."""
@@ -60,7 +79,10 @@ def log_startup_config() -> None:
         f"MAX_FILE_SIZE_BYTES={MAX_FILE_SIZE_BYTES} "
         f"OCR_ENGINE={OCR_ENGINE} "
         f"EXTRACT_IMAGES={EXTRACT_IMAGES} EXTRACT_LAYOUT={EXTRACT_LAYOUT} "
-        f"EXTRACT_TABLES={EXTRACT_TABLES} EXTRACT_MATH={EXTRACT_MATH}"
+        f"EXTRACT_TABLES={EXTRACT_TABLES} EXTRACT_MATH={EXTRACT_MATH} "
+        f"IMAGE_STORE_DIR={IMAGE_STORE_DIR} "
+        f"INCLUDE_BASE64_IMAGES={INCLUDE_BASE64_IMAGES} "
+        f"SUPABASE_URL={'(set)' if SUPABASE_URL else '(not set)'}"
     )
     print(msg, flush=True)
     sys.stderr.write(msg + "\n")
