@@ -14,7 +14,31 @@ from .utils import ExtractionError
 
 app = FastAPI(title="PDF OCR MVP")
 
+
+@app.on_event("startup")
+def _log_safe_mode():
+    import sys
+    skip = os.environ.get("SKIP_TIKA", "")
+    port = os.environ.get("PORT", "")
+    msg = f"PDF OCR: SKIP_TIKA={skip!r} PORT={port!r} -> safe_limits={'on' if (skip.lower() in ('1', 'true', 'yes') or port) else 'off'}"
+    print(msg, flush=True)
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+# On Railway (PORT set) or when SKIP_TIKA is set: cap DPI and pages to avoid OOM.
+SKIP_TIKA = os.environ.get("SKIP_TIKA", "").strip().lower() in ("1", "true", "yes")
+ON_RAILWAY = "PORT" in os.environ
+SAFE_DPI = 300
+SAFE_MAX_PAGES = 25
+
+
+def _apply_safe_limits(dpi: int, max_pages: int | None) -> tuple[int, int | None]:
+    if not (SKIP_TIKA or ON_RAILWAY):
+        return dpi, max_pages
+    return min(dpi, SAFE_DPI), max_pages if max_pages is not None else SAFE_MAX_PAGES
 
 
 @app.exception_handler(Exception)
@@ -92,6 +116,7 @@ async def extract_endpoint(
     extract_diagrams: bool = False,
 ):
     """Extract text and OCR from an uploaded PDF."""
+    dpi, max_pages = _apply_safe_limits(dpi, max_pages)
     try:
         return await _do_extract(
             file, dpi, max_pages, force_ocr, strict_quality, quality_retries,
@@ -115,6 +140,7 @@ async def api_extract_endpoint(
     extract_diagrams: bool = False,
 ):
     """Same as /extract; allows frontend to use /api/extract for Vercel compatibility."""
+    dpi, max_pages = _apply_safe_limits(dpi, max_pages)
     try:
         return await _do_extract(
             file, dpi, max_pages, force_ocr, strict_quality, quality_retries,

@@ -32,13 +32,17 @@
 
 - Free tier has limits. Try removing unused services or use a paid plan.
 
-**5. 502 Bad Gateway when uploading a PDF (e.g. after ~15 seconds)**
+**5. 502 Bad Gateway when uploading a PDF (e.g. after a few seconds)**
 
-- The app uses Apache Tika (Java), which starts a JVM on first use. That can exhaust memory and get the process killed → 502.
-- **Fix:** In Railway → your service → **Variables**, add:
+- The app uses Apache Tika (Java), which starts a JVM on first use and can exhaust memory → process killed → 502. PDF rendering at high DPI can also OOM.
+- **Fix (required):** In Railway → your service → **Variables**, add:
   - **Name:** `SKIP_TIKA`  
   - **Value:** `1`
-- Redeploy. Extraction will run **OCR-only** (no Tika), avoiding the JVM and staying within memory limits.
+- Save, then **Redeploy** (Variables don’t apply until the service is redeployed).
+- After deploy, open **Deployments** → latest → **Logs**. On startup you should see a line like:  
+  `PDF OCR: SKIP_TIKA='1' PORT='8000' -> safe_limits=on`  
+  If you see `SKIP_TIKA=''`, the variable isn’t set or the deploy didn’t pick it up.
+- With `SKIP_TIKA=1`, extraction is OCR-only (no Tika). DPI and page count are also capped on Railway to reduce memory.
 
 ---
 
