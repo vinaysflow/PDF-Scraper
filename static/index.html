@@ -257,6 +257,18 @@
     const copyBtn = document.getElementById("copyJson");
 
     let lastResult = null;
+    let syncMaxPages = 5; // default; fetched from /api/config on load
+
+    // Fetch runtime config (sync page limit) so we know when to use async.
+    (async () => {
+      try {
+        const r = await fetch("/api/config");
+        if (r.ok) {
+          const cfg = await r.json();
+          if (cfg.sync_max_pages) syncMaxPages = cfg.sync_max_pages;
+        }
+      } catch (_) { /* keep default */ }
+    })();
 
     function setStatus(msg, type) {
       statusEl.textContent = msg;
@@ -309,42 +321,92 @@
       downloadLink.download = (data.filename || "extraction").replace(/\.pdf$/i, "") + "_extraction.json";
     }
 
+    function parseError(res, data) {
+      let msg = data.detail;
+      if (Array.isArray(msg)) msg = msg.map((x) => x.msg || JSON.stringify(x)).join("; ");
+      if (!msg) msg = res.statusText || "Request failed";
+      return `${res.status}: ${msg}`;
+    }
+
+    // --- Async polling helper ---
+    async function pollJob(jobId) {
+      const POLL_INITIAL = 2000;
+      const POLL_MAX = 10000;
+      let interval = POLL_INITIAL;
+      while (true) {
+        await new Promise((r) => setTimeout(r, interval));
+        interval = Math.min(interval * 1.5, POLL_MAX);
+        const r = await fetch(`/api/extract/async/${jobId}`);
+        const job = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          throw new Error(job.detail || "Failed to poll job status.");
+        }
+        if (job.status === "completed") {
+          return job.result;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "Extraction failed.");
+        }
+        setStatus(`Processing (${job.status})… This may take several minutes.`, "working");
+      }
+    }
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const file = fileInput.files[0];
       if (!file) return;
       submitBtn.disabled = true;
-      setStatus("Processing… This may take several minutes for large PDFs.", "working");
       resultEl.classList.remove("visible");
 
       const formData = new FormData();
       formData.append("file", file);
-      const maxPages = document.getElementById("maxPages").value;
-      if (maxPages) formData.append("max_pages", maxPages);
+      const maxPagesVal = document.getElementById("maxPages").value;
+      if (maxPagesVal) formData.append("max_pages", maxPagesVal);
       if (document.getElementById("forceOcr").checked) formData.append("force_ocr", "true");
       if (document.getElementById("qualityTarget90").checked) formData.append("quality_target", "90");
       if (document.getElementById("extractDiagrams").checked) formData.append("extract_diagrams", "true");
 
       const params = new URLSearchParams();
       formData.forEach((v, k) => { if (k !== "file") params.append(k, v); });
-      const url = "/api/extract?" + params.toString();
+
+      // Decide sync vs async: use async when max_pages is empty (all) or > syncMaxPages
+      const maxPagesNum = maxPagesVal ? parseInt(maxPagesVal, 10) : null;
+      const useAsync = maxPagesNum === null || maxPagesNum > syncMaxPages;
 
       try {
-        const res = await fetch(url, {
-          method: "POST",
-          body: formData,
-          headers: { "Accept": "application/json" },
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          let msg = data.detail;
-          if (Array.isArray(msg)) msg = msg.map((x) => x.msg || JSON.stringify(x)).join("; ");
-          if (!msg) msg = res.statusText || "Request failed";
-          setStatus(`${res.status}: ${msg}`, "error");
-          return;
+        if (useAsync) {
+          setStatus("Uploading and starting async job…", "working");
+          const asyncUrl = "/api/extract/async?" + params.toString();
+          const res = await fetch(asyncUrl, {
+            method: "POST",
+            body: formData,
+            headers: { "Accept": "application/json" },
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setStatus(parseError(res, data), "error");
+            return;
+          }
+          setStatus(`Job accepted (${data.job_id.slice(0, 8)}…). Polling for result…`, "working");
+          const result = await pollJob(data.job_id);
+          setStatus("Done.", "success");
+          showResult(result);
+        } else {
+          setStatus("Processing… This may take a moment.", "working");
+          const syncUrl = "/api/extract?" + params.toString();
+          const res = await fetch(syncUrl, {
+            method: "POST",
+            body: formData,
+            headers: { "Accept": "application/json" },
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setStatus(parseError(res, data), "error");
+            return;
+          }
+          setStatus("Done.", "success");
+          showResult(data);
         }
-        setStatus("Done.", "success");
-        showResult(data);
       } catch (err) {
         setStatus(err.message || "Network or server error.", "error");
       } finally {

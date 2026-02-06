@@ -25,6 +25,51 @@ class Token(BaseModel):
     confidence: float
 
 
+class PageImage(BaseModel):
+    """Embedded image extracted from a PDF page."""
+
+    xref: int | None = None
+    format: str  # e.g. "png", "jpeg"
+    width: int
+    height: int
+    bbox: dict | None = None  # {x, y, w, h} in points
+    size_bytes: int = 0
+    base64_data: str | None = None  # base64-encoded image bytes
+    description: str | None = None  # optional VLM caption
+
+
+class LayoutBlock(BaseModel):
+    """Positional block from native PDF layout (text, image, or drawing)."""
+
+    type: str  # "text" | "image" | "drawing"
+    bbox: dict  # {x, y, w, h} in points
+    text: str | None = None
+    font: str | None = None
+    size: float | None = None
+    color: int | None = None  # sRGB integer
+
+
+class PageEquation(BaseModel):
+    """Math equation recognized from an image region."""
+
+    bbox: dict | None = None  # {x, y, w, h} in points
+    latex: str | None = None
+    rendered_text: str | None = None
+    error: str | None = None
+
+
+class PageTable(BaseModel):
+    """Structured table extracted from a PDF page."""
+
+    headers: List[str] = Field(default_factory=list)
+    rows: List[List[str]] = Field(default_factory=list)
+    csv_text: str = ""
+    accuracy: float | None = None
+    bbox: dict | None = None  # {x, y, w, h} in points
+    num_rows: int = 0
+    num_cols: int = 0
+
+
 class Page(BaseModel):
     """Page-level extraction data."""
 
@@ -32,6 +77,12 @@ class Page(BaseModel):
     source: str
     text: str
     tokens: List[Token] = Field(default_factory=list)
+    images: List[PageImage] = Field(default_factory=list)
+    tables: List[PageTable] = Field(default_factory=list)
+    equations: List[PageEquation] = Field(default_factory=list)
+    layout_blocks: List[LayoutBlock] = Field(default_factory=list)
+    page_width: float | None = None
+    page_height: float | None = None
 
 
 class ExtractionMetadata(BaseModel):
@@ -56,6 +107,7 @@ class QualityGate(BaseModel):
     page_number: int
     status: str
     layout: str | None = None
+    page_type: str | None = None  # "text" | "tika_sufficient" | "tika_fallback" | "figure"
     avg_confidence: float | None = None
     low_conf_ratio: float | None = None
     dual_pass_similarity: float | None = None
