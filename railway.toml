@@ -1,0 +1,5 @@
+# Force Railway to use our Dockerfile (openjdk-21, OpenCV deps).
+# If builds still show openjdk-17, set the service "Root Directory" to empty in Railway → Settings.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
