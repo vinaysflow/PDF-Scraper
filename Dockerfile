@@ -6,7 +6,7 @@ FROM python:3.11-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     poppler-utils \
-    openjdk-21-jre-headless \
+    openjdk-17-jre-headless \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libgomp1 \
