@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -316,24 +317,37 @@ def extract_pdf(
     tika_failed = False
     pre_rendered_images = None
 
+    # Skip Tika when SKIP_TIKA=1 (e.g. Railway) to avoid JVM OOM; use OCR-only.
+    if os.environ.get("SKIP_TIKA", "").strip().lower() in ("1", "true", "yes"):
+        tika_failed = True
+
     if force_ocr:
-        # Run Tika and PDF rendering in parallel to save time before OCR.
         ensure_binaries(["tesseract", "pdftoppm"])
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            f_tika = executor.submit(extract_with_tika, validated_path)
-            f_render = executor.submit(
-                convert_from_path,
+        if not tika_failed:
+            # Run Tika and PDF rendering in parallel to save time before OCR.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                f_tika = executor.submit(extract_with_tika, validated_path)
+                f_render = executor.submit(
+                    convert_from_path,
+                    str(validated_path),
+                    dpi=dpi,
+                    first_page=1,
+                    last_page=max_pages,
+                )
+                try:
+                    tika_text, tika_pages = f_tika.result()
+                except PdfProcessingError:
+                    tika_failed = True
+                pre_rendered_images = f_render.result()
+        else:
+            # Tika skipped (e.g. SKIP_TIKA); render only for OCR.
+            pre_rendered_images = convert_from_path(
                 str(validated_path),
                 dpi=dpi,
                 first_page=1,
                 last_page=max_pages,
             )
-            try:
-                tika_text, tika_pages = f_tika.result()
-            except PdfProcessingError:
-                tika_failed = True
-            pre_rendered_images = f_render.result()
-    else:
+    elif not tika_failed:
         try:
             tika_text, tika_pages = extract_with_tika(validated_path)
         except PdfProcessingError:

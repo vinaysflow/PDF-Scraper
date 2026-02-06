@@ -32,6 +32,14 @@
 
 - Free tier has limits. Try removing unused services or use a paid plan.
 
+**5. 502 Bad Gateway when uploading a PDF (e.g. after ~15 seconds)**
+
+- The app uses Apache Tika (Java), which starts a JVM on first use. That can exhaust memory and get the process killed → 502.
+- **Fix:** In Railway → your service → **Variables**, add:
+  - **Name:** `SKIP_TIKA`  
+  - **Value:** `1`
+- Redeploy. Extraction will run **OCR-only** (no Tika), avoiding the JVM and staying within memory limits.
+
 ---
 
 ## Vercel (upload page) failed
