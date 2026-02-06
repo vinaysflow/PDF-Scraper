@@ -52,10 +52,20 @@ async def _unhandled_exception_handler(request, exc: Exception):  # noqa: ARG001
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _apply_safe_limits(dpi: int, max_pages: int | None) -> tuple[int, int | None]:
+def _apply_safe_limits(
+    dpi: int, max_pages: int | None, *, is_async: bool = False,
+) -> tuple[int, int | None]:
+    """Cap DPI and max_pages based on environment.
+
+    When SAFE_MODE is active (Railway), apply conservative defaults.
+    The async path uses ASYNC_MAX_PAGES; the sync path uses SYNC_MAX_PAGES.
+    When running locally (SAFE_MODE=False), no limits are enforced.
+    """
     if not SAFE_MODE:
         return dpi, max_pages
-    return min(dpi, SAFE_DPI), max_pages if max_pages is not None else SYNC_MAX_PAGES
+    default_cap = ASYNC_MAX_PAGES if is_async else SYNC_MAX_PAGES
+    capped_pages = max_pages if max_pages is not None else default_cap
+    return min(dpi, SAFE_DPI), capped_pages
 
 
 async def _stream_upload_to_temp(file: UploadFile) -> str:
@@ -216,7 +226,7 @@ async def async_extract_endpoint(
     extract_diagrams: bool = False,
 ):
     """Accept a PDF and return 202 + job_id. Poll /api/extract/async/{job_id} for result."""
-    dpi, max_pages = _apply_safe_limits(dpi, max_pages)
+    dpi, max_pages = _apply_safe_limits(dpi, max_pages, is_async=True)
     temp_path = await _stream_upload_to_temp(file)
     job_id = job_store.create_job()
     enqueue_job(
