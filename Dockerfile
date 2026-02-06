@@ -1,5 +1,5 @@
 # Backend for PDF OCR (for Railway / Render / Fly.io)
-# Requires: tesseract, poppler-utils, openjdk (for Tika)
+# Requires: tesseract, poppler-utils, openjdk (for Tika), libs for OpenCV
 
 FROM python:3.11-slim
 
@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     poppler-utils \
     openjdk-17-jre-headless \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

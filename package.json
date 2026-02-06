@@ -1,0 +1,6 @@
+{
+  "name": "pdf-ocr-upload",
+  "version": "1.0.0",
+  "description": "Upload UI for PDF OCR (Vercel)",
+  "private": true
+}
