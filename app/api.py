@@ -17,6 +17,18 @@ app = FastAPI(title="PDF OCR MVP")
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    """Return JSON with error detail so the upload page can show it."""
+    from fastapi.responses import JSONResponse
+    if isinstance(exc, HTTPException):
+        raise exc
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc) or "Internal server error"},
+    )
+
+
 @app.get("/")
 async def index():
     """Serve the upload page."""

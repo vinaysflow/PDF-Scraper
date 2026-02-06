@@ -337,7 +337,10 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          setStatus(data.detail || res.statusText || "Request failed", "error");
+          let msg = data.detail;
+          if (Array.isArray(msg)) msg = msg.map((x) => x.msg || JSON.stringify(x)).join("; ");
+          if (!msg) msg = res.statusText || "Request failed";
+          setStatus(`${res.status}: ${msg}`, "error");
           return;
         }
         setStatus("Done.", "success");
