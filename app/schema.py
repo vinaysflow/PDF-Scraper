@@ -94,6 +94,7 @@ class ExtractionMetadata(BaseModel):
     pages_total: int
     dpi: int | None = None
     engine: str
+    language: str | None = None  # canonical language id used for OCR (e.g. english, kannada)
 
 
 class PageConfidenceSummary(BaseModel):

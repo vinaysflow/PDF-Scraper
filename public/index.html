@@ -210,6 +210,16 @@
         <input type="file" id="file" name="file" accept=".pdf" required />
         <div class="options">
           <div class="row">
+            <label for="languageSelect">Document language</label>
+            <select id="languageSelect" name="language" title="Used for OCR and quality checks (default: English)">
+              <option value="english" selected>English</option>
+              <option value="kannada">Kannada</option>
+              <option value="hindi">Hindi</option>
+              <option value="tamil">Tamil</option>
+              <option value="telugu">Telugu</option>
+            </select>
+          </div>
+          <div class="row">
             <label for="maxPages">Max pages</label>
             <input type="number" id="maxPages" name="max_pages" min="1" max="500" placeholder="All" title="Leave empty for all pages" />
             <span style="color: var(--muted); font-size: 0.85rem;">(empty = all)</span>
@@ -288,6 +298,10 @@
       const parts = [];
       parts.push(`${pages.length} page(s)`);
       parts.push(` · ${extraction.engine || "—"}`);
+      if (extraction.language) {
+        const langLabel = extraction.language.charAt(0).toUpperCase() + extraction.language.slice(1);
+        parts.push(` · Language: ${langLabel}`);
+      }
       if (data.stats) {
         parts.push(` · ${data.stats.total_tokens || 0} tokens`);
         if (data.stats.avg_confidence != null) parts.push(` · avg conf ${Number(data.stats.avg_confidence).toFixed(1)}%`);
@@ -338,6 +352,9 @@
         interval = Math.min(interval * 1.5, POLL_MAX);
         const r = await fetch(`/api/extract/async/${jobId}`);
         const job = await r.json().catch(() => ({}));
+        if (r.status === 404) {
+          throw new Error("Job not found. The server may have restarted. Try again with fewer pages (set Max pages) for immediate results.");
+        }
         if (!r.ok) {
           throw new Error(job.detail || "Failed to poll job status.");
         }
@@ -360,6 +377,8 @@
 
       const formData = new FormData();
       formData.append("file", file);
+      const languageVal = document.getElementById("languageSelect").value;
+      if (languageVal) formData.append("language", languageVal);
       const maxPagesRaw = document.getElementById("maxPages").value.trim();
       // Parse max_pages: only accept valid positive integers; everything else = all pages
       const maxPagesNum = /^\d+$/.test(maxPagesRaw) ? parseInt(maxPagesRaw, 10) : null;

@@ -45,6 +45,7 @@ from .schema import (
     QualityResult,
     Stats,
 )
+from .ocr_router import resolve_ocr_config
 from .utils import (
     EmptyContentError,
     MaxPagesExceededError,
@@ -99,6 +100,17 @@ LAYOUT_QUALITY_OVERRIDES: dict[str, dict] = {
     },
     "text": {
         "min_pass_similarity": 0.88,
+    },
+}
+
+# Language-specific quality overrides (relax gates for regional scripts).
+LANGUAGE_QUALITY_OVERRIDES: dict[str, dict] = {
+    "default": {},
+    "kannada": {
+        "min_avg_confidence": 90.0,
+        "max_low_conf_ratio": 0.6,
+        "min_pass_similarity": 0.35,
+        "min_native_similarity": 0.0,
     },
 }
 
@@ -435,6 +447,7 @@ def extract_pdf(
     strict_quality: bool = True,
     quality_retries: int = QUALITY_RETRIES_DEFAULT,
     quality_target: int | None = None,
+    language: str | None = None,
     ocr_lang: str = "eng",
     tessdata_path: str | None = None,
     extract_diagrams: bool = False,
@@ -461,7 +474,14 @@ def extract_pdf(
 
     doc_id = str(uuid4())
 
+    resolved = resolve_ocr_config(language=language, ocr_lang=ocr_lang)
     quality_overrides = QUALITY_TARGET_OVERRIDES.get(quality_target) if quality_target else None
+    language_overrides = LANGUAGE_QUALITY_OVERRIDES.get(resolved.quality_preset, {})
+    quality_overrides = dict(quality_overrides or {})
+    quality_overrides.update(language_overrides)
+    if not quality_overrides:
+        quality_overrides = None
+
     validated_path = validate_pdf_path(pdf_path)
     ensure_binaries(["pdftoppm"])
     page_count = get_pdf_page_count(validated_path)
@@ -491,7 +511,10 @@ def extract_pdf(
     # -------------------------------------------------------------------
     pre_rendered_images = None
     ocr_pages: Dict[int, dict] = {}
-    use_paddle = OCR_ENGINE == "paddleocr"
+    use_paddle = (
+        OCR_ENGINE == "paddleocr"
+        and resolved.paddleocr_lang is not None
+    )
 
     if ocr_required and use_paddle:
         # ----- PaddleOCR path -----
@@ -504,7 +527,9 @@ def extract_pdf(
                     batch_images = convert_from_path(
                         str(validated_path), dpi=dpi, first_page=pn, last_page=pn,
                     )
-                    paddle_results = paddle_ocr_pages(batch_images, lang=ocr_lang[:2], start_page=pn)
+                    paddle_results = paddle_ocr_pages(
+                        batch_images, lang=resolved.paddleocr_lang, start_page=pn
+                    )
                     ocr_pages.update(paddle_results)
                     del batch_images
             else:
@@ -523,7 +548,7 @@ def extract_pdf(
             )
             _, ocr_page_list = extract_with_ocr(
                 validated_path, dpi=dpi, max_pages=max_pages,
-                ocr_lang=ocr_lang, tessdata_path=tessdata_path,
+                ocr_lang=resolved.tesseract_lang, tessdata_path=tessdata_path,
                 images=pre_rendered_images,
             )
             ocr_pages = {
@@ -533,7 +558,7 @@ def extract_pdf(
             # Batched OCR for constrained environments (Railway).
             ocr_pages = _ocr_batched(
                 validated_path, page_count, dpi, max_pages,
-                ocr_lang, tessdata_path,
+                resolved.tesseract_lang, tessdata_path,
             )
         else:
             # Render + OCR only the pages that need it (not ALL pages).
@@ -543,7 +568,7 @@ def extract_pdf(
                 )
                 _, page_list = extract_with_ocr(
                     validated_path, dpi=dpi, max_pages=None,
-                    ocr_lang=ocr_lang, tessdata_path=tessdata_path,
+                    ocr_lang=resolved.tesseract_lang, tessdata_path=tessdata_path,
                     images=batch_images, workers=1,
                 )
                 for p in page_list:
@@ -604,7 +629,7 @@ def extract_pdf(
             for page_number in failures:
                 retry_result = rerun_page_ocr(
                     validated_path, page_number, attempt,
-                    ocr_lang=ocr_lang, tessdata_path=tessdata_path,
+                    ocr_lang=resolved.tesseract_lang, tessdata_path=tessdata_path,
                 )
                 current_page = ocr_pages.get(page_number, {})
                 current_tokens = current_page.get("tokens", [])
@@ -782,6 +807,7 @@ def extract_pdf(
             pages_total=page_count,
             dpi=dpi if method in {"ocr", "hybrid"} else None,
             engine=engine,
+            language=resolved.language_id,
         ),
         pages=pages,
         full_text=full_text,

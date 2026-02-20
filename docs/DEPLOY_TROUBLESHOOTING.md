@@ -75,6 +75,31 @@
 
 ---
 
+## Async extraction: "Job not found" (404)
+
+When using async extraction (e.g. uploading with "Max pages" left empty or set to a large number), the UI submits a job and then polls for the result. If you see **"Job not found"** during polling, the job was created but can no longer be found. Common causes and fixes:
+
+**1. Backend restarted while the job was running**
+
+- The job store is in-memory by default. If the backend process restarts (e.g. Railway redeploy, crash, or OOM), all in-progress jobs are lost.
+- **Fix:** Set the environment variable **`JOB_STORE_DIR`** to a writable path (e.g. `/tmp/job_store`) in Railway → your service → **Variables**, then **Redeploy**. With this set, every job state change is persisted to disk and the store is repopulated on startup.
+
+**2. Multiple backend instances**
+
+- If more than one instance of the backend is running, the instance that created the job may not be the one that receives the poll request.
+- **Fix:** Run a **single instance** of the backend service (in Railway → service → **Settings** → Replicas → 1).
+
+**3. UI is on Vercel but async proxy is missing**
+
+- The Vercel proxy must handle both `POST /api/extract/async` and `GET /api/extract/async/:job_id`. If only `api/extract.js` is deployed (which handles sync `/api/extract` only), the async requests 404 on Vercel without ever reaching the backend.
+- **Fix:** Ensure `api/extract/async.js` and `api/extract/async/[jobId].js` are present in the repo and deployed to Vercel. Pull the latest code and redeploy Vercel.
+
+**4. Quick workaround: use sync extraction**
+
+- Set **Max pages** to a number (e.g. 10 or 20) in the upload form. This uses the synchronous endpoint, which does not require the job store or polling. The result is returned in a single request.
+
+---
+
 ## What to send so we can fix it
 
 Copy and paste:

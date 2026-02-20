@@ -48,10 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Quality target percentage (e.g. 90). Uses relaxed gates for that target (default: strict).",
     )
     parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="Document language for OCR (e.g. kannada, hindi). Overrides --ocr-lang when set.",
+    )
+    parser.add_argument(
         "--ocr-lang",
         type=str,
         default="eng",
-        help="Tesseract language code (default: eng).",
+        help="Tesseract language code (default: eng). Used when --language is not set.",
     )
     parser.add_argument(
         "--tessdata-path",
@@ -122,6 +128,7 @@ def main() -> int:
             strict_quality=args.strict_quality,
             quality_retries=args.quality_retries,
             quality_target=args.quality_target,
+            language=args.language,
             ocr_lang=args.ocr_lang,
             tessdata_path=args.tessdata_path,
             extract_diagrams=args.extract_diagrams,

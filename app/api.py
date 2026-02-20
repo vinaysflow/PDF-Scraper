@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Security, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 
@@ -127,6 +127,7 @@ async def _do_extract(
     strict_quality: bool,
     quality_retries: int,
     quality_target: int | None,
+    language: str | None,
     ocr_lang: str,
     tessdata_path: str | None,
     extract_diagrams: bool,
@@ -142,6 +143,7 @@ async def _do_extract(
             strict_quality=strict_quality,
             quality_retries=quality_retries,
             quality_target=quality_target,
+            language=language,
             ocr_lang=ocr_lang,
             tessdata_path=tessdata_path,
             extract_diagrams=extract_diagrams,
@@ -197,7 +199,8 @@ async def extract_endpoint(
     strict_quality: bool = True,
     quality_retries: int = 2,
     quality_target: int | None = None,
-    ocr_lang: str = "eng",
+    language: str | None = Form(None),
+    ocr_lang: str = Form("eng"),
     tessdata_path: str | None = None,
     extract_diagrams: bool = False,
     include_base64: bool = False,
@@ -207,7 +210,7 @@ async def extract_endpoint(
     try:
         return await _do_extract(
             file, dpi, max_pages, force_ocr, strict_quality, quality_retries,
-            quality_target, ocr_lang, tessdata_path, extract_diagrams,
+            quality_target, language, ocr_lang, tessdata_path, extract_diagrams,
             include_base64=include_base64,
         )
     except ExtractionError as exc:
@@ -223,7 +226,8 @@ async def api_extract_endpoint(
     strict_quality: bool = True,
     quality_retries: int = 2,
     quality_target: int | None = None,
-    ocr_lang: str = "eng",
+    language: str | None = Form(None),
+    ocr_lang: str = Form("eng"),
     tessdata_path: str | None = None,
     extract_diagrams: bool = False,
     include_base64: bool = False,
@@ -233,7 +237,7 @@ async def api_extract_endpoint(
     try:
         return await _do_extract(
             file, dpi, max_pages, force_ocr, strict_quality, quality_retries,
-            quality_target, ocr_lang, tessdata_path, extract_diagrams,
+            quality_target, language, ocr_lang, tessdata_path, extract_diagrams,
             include_base64=include_base64,
         )
     except ExtractionError as exc:
@@ -252,7 +256,8 @@ async def async_extract_endpoint(
     strict_quality: bool = True,
     quality_retries: int = 2,
     quality_target: int | None = None,
-    ocr_lang: str = "eng",
+    language: str | None = Form(None),
+    ocr_lang: str = Form("eng"),
     tessdata_path: str | None = None,
     extract_diagrams: bool = False,
     include_base64: bool = False,
@@ -271,6 +276,7 @@ async def async_extract_endpoint(
         strict_quality=strict_quality,
         quality_retries=quality_retries,
         quality_target=quality_target,
+        language=language,
         ocr_lang=ocr_lang,
         tessdata_path=tessdata_path,
         extract_diagrams=extract_diagrams,

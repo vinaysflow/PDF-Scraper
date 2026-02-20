@@ -1,9 +1,9 @@
-"""In-memory job store for async extraction jobs with optional disk persistence.
+"""In-memory job store for async extraction jobs with disk persistence.
 
 Thread-safe. Each job goes through: pending -> processing -> completed | failed.
 
-When JOB_STORE_DIR is set, completed/failed jobs are persisted to disk as JSON
-so results survive server restarts.
+When JOB_STORE_DIR is set, **every** state change is persisted to disk as JSON
+and the store is repopulated from disk on startup so jobs survive server restarts.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ class JobStore:
         self._persist_dir: Path | None = Path(persist_dir) if persist_dir else None
         if self._persist_dir:
             self._persist_dir.mkdir(parents=True, exist_ok=True)
+            self._load_from_disk()
 
     # ------------------------------------------------------------------
     # Public API
@@ -57,6 +58,7 @@ class JobStore:
             self._evict_old()
             entry = _JobEntry()
             self._jobs[job_id] = entry
+            self._persist_to_disk(job_id, entry)
         return job_id
 
     def get_job(self, job_id: str) -> dict | None:
@@ -83,6 +85,7 @@ class JobStore:
             if entry is not None:
                 entry.status = "processing"
                 entry.updated_at = time.time()
+                self._persist_to_disk(job_id, entry)
 
     def set_completed(self, job_id: str, result: Any) -> None:
         with self._lock:
@@ -147,6 +150,7 @@ class JobStore:
             entry = self._jobs.get(job_id)
             if entry is not None:
                 entry.filename = filename
+                self._persist_to_disk(job_id, entry)
 
     def __len__(self) -> int:
         with self._lock:
@@ -167,7 +171,7 @@ class JobStore:
         }
 
     def _persist_to_disk(self, job_id: str, entry: _JobEntry) -> None:
-        """Write a completed/failed job to disk (called under lock)."""
+        """Write job state to disk on every change (called under lock)."""
         if not self._persist_dir:
             return
         try:
@@ -176,6 +180,29 @@ class JobStore:
             disk_path.write_text(json.dumps(data, default=str))
         except Exception:
             logger.warning("Failed to persist job %s to disk", job_id)
+
+    def _load_from_disk(self) -> None:
+        """Repopulate in-memory store from persisted JSON files on startup."""
+        if not self._persist_dir:
+            return
+        loaded = 0
+        for path in self._persist_dir.glob("*.json"):
+            job_id = path.stem
+            try:
+                data = json.loads(path.read_text())
+                entry = _JobEntry()
+                entry.status = data.get("status", "pending")
+                entry.result = data.get("result")
+                entry.error = data.get("error")
+                entry.created_at = float(data.get("created_at", entry.created_at))
+                entry.updated_at = float(data.get("updated_at", entry.updated_at))
+                entry.filename = data.get("filename")
+                self._jobs[job_id] = entry
+                loaded += 1
+            except Exception:
+                logger.warning("Skipping corrupt persisted job file: %s", path.name)
+        if loaded:
+            logger.info("Loaded %d persisted job(s) from disk", loaded)
 
     def _evict_old(self) -> None:
         """Remove in-memory entries older than TTL (called under lock)."""
