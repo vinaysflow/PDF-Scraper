@@ -541,8 +541,16 @@ def extract_pdf(
         # ----- Tesseract path (default) -----
         ensure_binaries(["tesseract", "pdftoppm"])
 
-        if force_ocr:
-            # Render all pages for OCR when force_ocr is on.
+        if SAFE_MODE:
+            # Batched OCR for constrained environments (Railway).
+            # Processes SAFE_BATCH_PAGES pages at a time to bound memory,
+            # regardless of force_ocr.
+            ocr_pages = _ocr_batched(
+                validated_path, page_count, dpi, max_pages,
+                resolved.tesseract_lang, tessdata_path,
+            )
+        elif force_ocr:
+            # Render all pages for OCR when force_ocr is on (local/high-RAM only).
             pre_rendered_images = convert_from_path(
                 str(validated_path), dpi=dpi, first_page=1, last_page=max_pages,
             )
@@ -554,12 +562,6 @@ def extract_pdf(
             ocr_pages = {
                 page["page_number"]: page for page in ocr_page_list if page is not None
             }
-        elif SAFE_MODE:
-            # Batched OCR for constrained environments (Railway).
-            ocr_pages = _ocr_batched(
-                validated_path, page_count, dpi, max_pages,
-                resolved.tesseract_lang, tessdata_path,
-            )
         else:
             # Render + OCR only the pages that need it (not ALL pages).
             for pn in sorted(ocr_required):
