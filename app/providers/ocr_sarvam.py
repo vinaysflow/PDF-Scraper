@@ -42,11 +42,16 @@ def is_available() -> bool:
             import sarvamai  # noqa: F401
             from .. import config as _cfg
             _AVAILABLE = bool(_cfg.SARVAM_API_KEY)
-            if not _AVAILABLE:
-                logger.info("sarvamai installed but SARVAM_API_KEY not set — Sarvam disabled")
-        except ImportError:
+            if _AVAILABLE:
+                print(f"[Sarvam] SDK found (v{getattr(sarvamai, '__version__', '?')}), API key set — enabled", flush=True)
+            else:
+                print("[Sarvam] SDK found but SARVAM_API_KEY not set — disabled", flush=True)
+        except ImportError as exc:
             _AVAILABLE = False
-            logger.info("sarvamai not installed — Sarvam Vision engine disabled")
+            print(f"[Sarvam] sarvamai not installed ({exc}) — disabled", flush=True)
+        except Exception as exc:
+            _AVAILABLE = False
+            print(f"[Sarvam] unexpected error during init: {exc} — disabled", flush=True)
     return _AVAILABLE
 
 

@@ -551,12 +551,16 @@ def extract_pdf(
         and resolved.paddleocr_lang is not None
     )
 
+    print(f"[OCR routing] sarvam_lang={resolved.sarvam_lang}, use_sarvam={use_sarvam}, ocr_required={len(ocr_required)} pages", flush=True)
+
     if ocr_required and use_sarvam:
         # ----- Sarvam Vision path (regional languages) -----
         try:
             from .providers.ocr_sarvam import is_available as sarvam_available, ocr_pages_parallel as sarvam_ocr
 
-            if sarvam_available():
+            avail = sarvam_available()
+            print(f"[OCR routing] sarvam_available()={avail}", flush=True)
+            if avail:
                 sarvam_results = sarvam_ocr(
                     validated_path,
                     pages=sorted(ocr_required),
@@ -564,18 +568,20 @@ def extract_pdf(
                     chunk_size=SARVAM_CHUNK_PAGES,
                 )
                 non_empty = {pn: r for pn, r in sarvam_results.items() if r.get("text", "").strip()}
+                print(f"[OCR routing] Sarvam returned {len(non_empty)}/{len(sarvam_results)} non-empty pages", flush=True)
                 ocr_pages.update(non_empty)
                 if non_empty:
                     used_sarvam = True
                     sarvam_pages = set(non_empty.keys())
                     ocr_required = ocr_required - sarvam_pages
                 if ocr_required:
-                    logger.info("Sarvam returned empty for %d page(s), falling back to Tesseract", len(ocr_required))
+                    print(f"[OCR routing] Sarvam empty for {len(ocr_required)} page(s), falling back to Tesseract", flush=True)
                     use_sarvam = False
             else:
+                print("[OCR routing] Sarvam not available, falling back", flush=True)
                 use_sarvam = False
         except Exception as exc:
-            logger.warning("Sarvam Vision failed, falling back: %s", exc)
+            print(f"[OCR routing] Sarvam failed: {exc}, falling back", flush=True)
             use_sarvam = False
 
     if ocr_required and use_paddle and not use_sarvam:
