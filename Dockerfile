@@ -6,6 +6,9 @@ FROM python:3.11-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-kan \
+    tesseract-ocr-hin \
+    tesseract-ocr-tam \
+    tesseract-ocr-tel \
     poppler-utils \
     openjdk-17-jre-headless \
     libgl1-mesa-glx \

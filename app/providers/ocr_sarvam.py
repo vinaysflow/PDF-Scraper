@@ -22,6 +22,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 import re
 import tempfile
 import zipfile
@@ -55,75 +56,105 @@ def is_available() -> bool:
     return _AVAILABLE
 
 
-def _extract_page_range_pdf(pdf_path: Path, first_page: int, last_page: int) -> Path:
-    """Extract a page range from a PDF into a temporary file using PyMuPDF."""
+def _extract_pages_pdf(pdf_path: Path, page_numbers: list[int]) -> Path:
+    """Extract specific pages from a PDF into a temporary file using PyMuPDF.
+
+    ``page_numbers`` are 1-based. Only the requested pages are included,
+    in the order given.
+    """
     import fitz  # PyMuPDF
 
     src = fitz.open(str(pdf_path))
-    dst = fitz.open()
-    dst.insert_pdf(src, from_page=first_page - 1, to_page=last_page - 1)
+    try:
+        dst = fitz.open()
+        try:
+            for pn in page_numbers:
+                idx = pn - 1
+                if 0 <= idx < len(src):
+                    dst.insert_pdf(src, from_page=idx, to_page=idx)
+            tmp_path = Path(tempfile.mkstemp(suffix=".pdf")[1])
+            dst.save(str(tmp_path))
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return tmp_path
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    dst.save(tmp.name)
-    dst.close()
-    src.close()
-    return Path(tmp.name)
+
+def _natural_sort_key(name: str):
+    """Sort key that handles embedded numbers correctly (page_2 before page_10)."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", name)]
 
 
-def _parse_markdown_pages(zip_path: Path, first_page: int, page_count: int) -> dict[int, str]:
+def _parse_markdown_pages(zip_path: Path, page_numbers: list[int]) -> dict[int, str]:
     """Parse the Sarvam output ZIP and map content back to page numbers.
 
     Sarvam returns a ZIP containing Markdown (or HTML) files. The files may
     be named by page index (e.g. page_1.md, page_2.md) or there may be a
     single file for the whole chunk. This function handles both cases.
     """
+    page_count = len(page_numbers)
     page_texts: dict[int, str] = {}
 
-    with zipfile.ZipFile(str(zip_path), "r") as zf:
-        md_files = sorted(
-            [n for n in zf.namelist() if n.endswith((".md", ".html")) and not n.startswith("__")],
-        )
+    try:
+        with zipfile.ZipFile(str(zip_path), "r") as zf:
+            md_files = sorted(
+                [
+                    os.path.basename(n)
+                    for n in zf.namelist()
+                    if n.endswith((".md", ".html"))
+                    and not os.path.basename(n).startswith("__")
+                    and not n.startswith("__")
+                ],
+                key=_natural_sort_key,
+            )
 
-        if not md_files:
-            logger.warning("Sarvam output ZIP contains no .md/.html files")
-            return page_texts
+            if not md_files:
+                logger.warning("Sarvam output ZIP contains no .md/.html files")
+                return page_texts
 
-        if len(md_files) == 1:
-            content = zf.read(md_files[0]).decode("utf-8", errors="replace")
-            sections = re.split(r"(?m)^---\s*$", content)
-            sections = [s.strip() for s in sections if s.strip()]
+            all_names = {os.path.basename(n): n for n in zf.namelist()}
 
-            if len(sections) >= page_count:
-                for i in range(page_count):
-                    page_texts[first_page + i] = sections[i]
+            if len(md_files) == 1:
+                full_name = all_names.get(md_files[0], md_files[0])
+                content = zf.read(full_name).decode("utf-8", errors="replace")
+                sections = re.split(r"(?m)^---\s*$", content)
+                sections = [s.strip() for s in sections if s.strip()]
+
+                if len(sections) >= page_count:
+                    for i, pn in enumerate(page_numbers):
+                        page_texts[pn] = sections[i]
+                else:
+                    for pn in page_numbers:
+                        page_texts[pn] = content
             else:
-                for i in range(page_count):
-                    page_texts[first_page + i] = content
-        else:
-            for i, fname in enumerate(md_files[:page_count]):
-                content = zf.read(fname).decode("utf-8", errors="replace")
-                page_texts[first_page + i] = content.strip()
+                for i, fname in enumerate(md_files[:page_count]):
+                    full_name = all_names.get(fname, fname)
+                    content = zf.read(full_name).decode("utf-8", errors="replace")
+                    page_texts[page_numbers[i]] = content.strip()
+    except zipfile.BadZipFile:
+        logger.warning("Sarvam output is not a valid ZIP file")
 
     return page_texts
 
 
 def ocr_pdf_chunk(
     pdf_path: Path,
-    first_page: int,
-    last_page: int,
+    page_numbers: list[int],
     sarvam_lang: str,
     output_format: str = "md",
 ) -> dict[int, dict[str, Any]]:
-    """Process a chunk of pages through the Sarvam Document Intelligence API.
+    """Process a chunk of specific pages through the Sarvam Document Intelligence API.
 
+    ``page_numbers`` is a list of 1-based page numbers to process.
     Returns a dict mapping page_number -> result dict compatible with the
     Tesseract/Paddle output format.
     """
     import sarvamai as _sarvamai_sdk
     from ..config import SARVAM_API_KEY
 
-    page_count = last_page - first_page + 1
-    chunk_pdf = _extract_page_range_pdf(pdf_path, first_page, last_page)
+    chunk_pdf = _extract_pages_pdf(pdf_path, page_numbers)
+    output_zip_path: Path | None = None
 
     try:
         client = _sarvamai_sdk.SarvamAI(api_subscription_key=SARVAM_API_KEY)
@@ -133,8 +164,8 @@ def ocr_pdf_chunk(
             output_format=output_format,
         )
         logger.info(
-            "Sarvam job created for pages %d-%d (%s): %s",
-            first_page, last_page, sarvam_lang, getattr(job, "job_id", "?"),
+            "Sarvam job created for %d pages (%s): %s",
+            len(page_numbers), sarvam_lang, getattr(job, "job_id", "?"),
         )
 
         job.upload_file(str(chunk_pdf))
@@ -143,16 +174,18 @@ def ocr_pdf_chunk(
 
         job_state = getattr(status, "job_state", None) or getattr(status, "state", "unknown")
         if job_state not in ("Completed", "PartiallyCompleted"):
-            logger.warning("Sarvam job ended with state=%s for pages %d-%d", job_state, first_page, last_page)
-            return _empty_results(first_page, last_page)
+            logger.warning("Sarvam job ended with state=%s for pages %s", job_state, page_numbers)
+            return _empty_results_for_pages(page_numbers)
 
-        output_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
-        job.download_output(output_zip.name)
+        fd, zip_name = tempfile.mkstemp(suffix=".zip")
+        os.close(fd)
+        output_zip_path = Path(zip_name)
+        job.download_output(str(output_zip_path))
 
-        page_texts = _parse_markdown_pages(Path(output_zip.name), first_page, page_count)
+        page_texts = _parse_markdown_pages(output_zip_path, page_numbers)
 
         results: dict[int, dict[str, Any]] = {}
-        for pn in range(first_page, last_page + 1):
+        for pn in page_numbers:
             text = page_texts.get(pn, "")
             results[pn] = {
                 "page_number": pn,
@@ -164,14 +197,16 @@ def ocr_pdf_chunk(
         return results
 
     except Exception as exc:
-        logger.warning("Sarvam API failed for pages %d-%d: %s", first_page, last_page, exc)
-        return _empty_results(first_page, last_page)
+        logger.warning("Sarvam API failed for pages %s: %s", page_numbers, exc)
+        return _empty_results_for_pages(page_numbers)
     finally:
         chunk_pdf.unlink(missing_ok=True)
+        if output_zip_path is not None:
+            output_zip_path.unlink(missing_ok=True)
 
 
-def _empty_results(first_page: int, last_page: int) -> dict[int, dict[str, Any]]:
-    """Return empty result dicts for a page range (used on failure)."""
+def _empty_results_for_pages(page_numbers: list[int]) -> dict[int, dict[str, Any]]:
+    """Return empty result dicts for specific pages (used on failure)."""
     return {
         pn: {
             "page_number": pn,
@@ -180,7 +215,7 @@ def _empty_results(first_page: int, last_page: int) -> dict[int, dict[str, Any]]
             "pass_similarity": None,
             "layout": None,
         }
-        for pn in range(first_page, last_page + 1)
+        for pn in page_numbers
     }
 
 
@@ -193,21 +228,19 @@ def ocr_pages_parallel(
 ) -> dict[int, dict[str, Any]]:
     """Process pages through Sarvam Vision in parallel chunks.
 
-    Splits the page list into chunks of ``chunk_size``, submits each to
-    Sarvam in parallel, and merges results.
+    Splits the page list into chunks of ``chunk_size`` pages, submits each
+    to Sarvam in parallel, and merges results. Only the requested pages are
+    sent to the API — no extra pages are included.
     """
     pdf_path = Path(pdf_path)
     if not pages:
         return {}
 
     sorted_pages = sorted(pages)
-    chunks: list[tuple[int, int]] = []
-    i = 0
-    while i < len(sorted_pages):
-        chunk_start = sorted_pages[i]
-        chunk_end = sorted_pages[min(i + chunk_size - 1, len(sorted_pages) - 1)]
-        chunks.append((chunk_start, chunk_end))
-        i += chunk_size
+    chunks: list[list[int]] = [
+        sorted_pages[i : i + chunk_size]
+        for i in range(0, len(sorted_pages), chunk_size)
+    ]
 
     logger.info(
         "Sarvam: processing %d pages in %d chunk(s) of up to %d pages (%s)",
@@ -218,16 +251,16 @@ def ocr_pages_parallel(
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(chunks))) as pool:
         futures = {
-            pool.submit(ocr_pdf_chunk, pdf_path, start, end, sarvam_lang): (start, end)
-            for start, end in chunks
+            pool.submit(ocr_pdf_chunk, pdf_path, chunk, sarvam_lang): chunk
+            for chunk in chunks
         }
         for future in as_completed(futures):
-            start, end = futures[future]
+            chunk = futures[future]
             try:
                 chunk_results = future.result()
                 all_results.update(chunk_results)
             except Exception as exc:
-                logger.warning("Sarvam chunk %d-%d raised: %s", start, end, exc)
-                all_results.update(_empty_results(start, end))
+                logger.warning("Sarvam chunk %s raised: %s", chunk, exc)
+                all_results.update(_empty_results_for_pages(chunk))
 
     return all_results

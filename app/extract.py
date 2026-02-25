@@ -22,8 +22,6 @@ from .config import (
     IMAGE_STORE_DIR,
     INCLUDE_BASE64_IMAGES,
     OCR_ENGINE,
-    SAFE_BATCH_PAGES,
-    SAFE_MODE,
     SARVAM_CHUNK_PAGES,
 )
 from .ocr import extract_with_ocr, rerun_page_ocr
@@ -169,10 +167,10 @@ def _build_pages(
         )
         if page_number in ocr_used:
             ocr_page = ocr_pages.get(page_number, {})
-            use_native_text = (
-                selected_source == "native"
-                or (prefer_native_text and bool(native_text.strip()))
-            )
+            if selected_source is not None:
+                use_native_text = (selected_source == "native")
+            else:
+                use_native_text = (prefer_native_text and bool(native_text.strip()))
             pages.append(
                 Page(
                     page_number=page_number,
@@ -436,38 +434,6 @@ def _quality_summary(
 
 
 # ---------------------------------------------------------------------------
-# Batched OCR (safe mode): render + OCR in small page batches to bound memory
-# ---------------------------------------------------------------------------
-def _ocr_batched(
-    validated_path: Path,
-    page_count: int,
-    dpi: int,
-    max_pages: int | None,
-    ocr_lang: str,
-    tessdata_path: str | None,
-    batch_size: int = SAFE_BATCH_PAGES,
-) -> Dict[int, dict]:
-    """Render and OCR pages in batches of *batch_size*. Returns ocr_pages dict."""
-    last_page = min(max_pages, page_count) if max_pages else page_count
-    ocr_pages: Dict[int, dict] = {}
-    for start in range(1, last_page + 1, batch_size):
-        end = min(start + batch_size - 1, last_page)
-        batch_images = convert_from_path(
-            str(validated_path), dpi=dpi, first_page=start, last_page=end,
-        )
-        _, page_list = extract_with_ocr(
-            validated_path, dpi=dpi, max_pages=None,
-            ocr_lang=ocr_lang, tessdata_path=tessdata_path,
-            images=batch_images, workers=1,
-        )
-        for p in page_list:
-            real_page = start + (p["page_number"] - 1)
-            p["page_number"] = real_page
-            ocr_pages[real_page] = p
-        del batch_images  # free images before next batch
-    return ocr_pages
-
-
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
@@ -609,42 +575,19 @@ def extract_pdf(
         # ----- Tesseract path (default) -----
         ensure_binaries(["tesseract", "pdftoppm"])
 
-        if SAFE_MODE:
-            # Batched OCR for constrained environments (Railway).
-            # Processes SAFE_BATCH_PAGES pages at a time to bound memory,
-            # regardless of force_ocr.
-            ocr_pages = _ocr_batched(
-                validated_path, page_count, dpi, max_pages,
-                resolved.tesseract_lang, tessdata_path,
+        for pn in sorted(ocr_required):
+            batch_images = convert_from_path(
+                str(validated_path), dpi=dpi, first_page=pn, last_page=pn,
             )
-        elif force_ocr:
-            # Render all pages for OCR when force_ocr is on (local/high-RAM only).
-            pre_rendered_images = convert_from_path(
-                str(validated_path), dpi=dpi, first_page=1, last_page=max_pages,
-            )
-            _, ocr_page_list = extract_with_ocr(
-                validated_path, dpi=dpi, max_pages=max_pages,
+            _, page_list = extract_with_ocr(
+                validated_path, dpi=dpi, max_pages=None,
                 ocr_lang=resolved.tesseract_lang, tessdata_path=tessdata_path,
-                images=pre_rendered_images,
+                images=batch_images, workers=1,
             )
-            ocr_pages = {
-                page["page_number"]: page for page in ocr_page_list if page is not None
-            }
-        else:
-            # Render + OCR only the pages that need it (not ALL pages).
-            for pn in sorted(ocr_required):
-                batch_images = convert_from_path(
-                    str(validated_path), dpi=dpi, first_page=pn, last_page=pn,
-                )
-                _, page_list = extract_with_ocr(
-                    validated_path, dpi=dpi, max_pages=None,
-                    ocr_lang=resolved.tesseract_lang, tessdata_path=tessdata_path,
-                    images=batch_images, workers=1,
-                )
-                for p in page_list:
-                    p["page_number"] = pn
-                    ocr_pages[pn] = p
-                del batch_images
+            for p in page_list:
+                p["page_number"] = pn
+                ocr_pages[pn] = p
+            del batch_images
 
     all_ocr_pages = sarvam_pages | ocr_required
 

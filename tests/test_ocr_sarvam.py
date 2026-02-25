@@ -79,7 +79,7 @@ class TestParseMarkdownPages:
             "page_2.md": "# Page Two\nContent of page two.",
             "page_3.md": "# Page Three\nContent of page three.",
         })
-        result = _parse_markdown_pages(zip_path, first_page=5, page_count=3)
+        result = _parse_markdown_pages(zip_path, [5, 6, 7])
 
         assert len(result) == 3
         assert result[5] == "# Page One\nContent of page one."
@@ -91,7 +91,7 @@ class TestParseMarkdownPages:
 
         content = "Page 1 content\n---\nPage 2 content\n---\nPage 3 content"
         zip_path = self._make_zip({"output.md": content})
-        result = _parse_markdown_pages(zip_path, first_page=1, page_count=3)
+        result = _parse_markdown_pages(zip_path, [1, 2, 3])
 
         assert len(result) == 3
         assert result[1] == "Page 1 content"
@@ -103,7 +103,7 @@ class TestParseMarkdownPages:
 
         content = "All content in one file"
         zip_path = self._make_zip({"output.md": content})
-        result = _parse_markdown_pages(zip_path, first_page=1, page_count=2)
+        result = _parse_markdown_pages(zip_path, [1, 2])
 
         assert len(result) == 2
         assert result[1] == content
@@ -113,7 +113,7 @@ class TestParseMarkdownPages:
         from app.providers.ocr_sarvam import _parse_markdown_pages
 
         zip_path = self._make_zip({})
-        result = _parse_markdown_pages(zip_path, first_page=1, page_count=1)
+        result = _parse_markdown_pages(zip_path, [1])
         assert result == {}
 
     def test_ignores_macosx_metadata(self):
@@ -123,15 +123,30 @@ class TestParseMarkdownPages:
             "__MACOSX/._page_1.md": "metadata",
             "page_1.md": "Real content",
         })
-        result = _parse_markdown_pages(zip_path, first_page=1, page_count=1)
+        result = _parse_markdown_pages(zip_path, [1])
         assert len(result) == 1
         assert result[1] == "Real content"
+
+    def test_natural_sort_order(self):
+        """page_2.md should come before page_10.md."""
+        from app.providers.ocr_sarvam import _parse_markdown_pages
+
+        zip_path = self._make_zip({
+            "page_1.md": "First",
+            "page_10.md": "Tenth",
+            "page_2.md": "Second",
+        })
+        result = _parse_markdown_pages(zip_path, [1, 2, 3])
+
+        assert result[1] == "First"
+        assert result[2] == "Second"
+        assert result[3] == "Tenth"
 
 
 class TestOcrPdfChunk:
     """Test ocr_pdf_chunk with mocked Sarvam SDK."""
 
-    @patch("app.providers.ocr_sarvam._extract_page_range_pdf")
+    @patch("app.providers.ocr_sarvam._extract_pages_pdf")
     @patch("app.providers.ocr_sarvam._parse_markdown_pages")
     def test_successful_chunk(self, mock_parse, mock_extract):
         from app.providers.ocr_sarvam import ocr_pdf_chunk
@@ -154,7 +169,7 @@ class TestOcrPdfChunk:
         mock_sarvamai.SarvamAI.return_value = mock_client
         with patch.dict("sys.modules", {"sarvamai": mock_sarvamai}):
             with patch("app.config.SARVAM_API_KEY", "test-key"):
-                result = ocr_pdf_chunk(Path("/tmp/test.pdf"), 1, 2, "kn-IN")
+                result = ocr_pdf_chunk(Path("/tmp/test.pdf"), [1, 2], "kn-IN")
 
         assert len(result) == 2
         assert result[1]["text"] == "ಕನ್ನಡ ಪಠ್ಯ"
@@ -162,7 +177,7 @@ class TestOcrPdfChunk:
         assert result[1]["pass_similarity"] == 1.0
         assert result[2]["text"] == "ಇನ್ನಷ್ಟು ಪಠ್ಯ"
 
-    @patch("app.providers.ocr_sarvam._extract_page_range_pdf")
+    @patch("app.providers.ocr_sarvam._extract_pages_pdf")
     def test_api_failure_returns_empty(self, mock_extract):
         from app.providers.ocr_sarvam import ocr_pdf_chunk
 
@@ -172,7 +187,7 @@ class TestOcrPdfChunk:
         mock_sarvamai.SarvamAI.side_effect = Exception("API down")
         with patch.dict("sys.modules", {"sarvamai": mock_sarvamai}):
             with patch("app.config.SARVAM_API_KEY", "test-key"):
-                result = ocr_pdf_chunk(Path("/tmp/test.pdf"), 1, 3, "kn-IN")
+                result = ocr_pdf_chunk(Path("/tmp/test.pdf"), [1, 2, 3], "kn-IN")
 
         assert len(result) == 3
         for pn in [1, 2, 3]:
@@ -186,10 +201,10 @@ class TestOcrPagesParallel:
     def test_splits_into_chunks(self, mock_chunk):
         from app.providers.ocr_sarvam import ocr_pages_parallel
 
-        def _fake_chunk(pdf_path, first, last, lang):
+        def _fake_chunk(pdf_path, page_numbers, lang):
             return {
                 pn: {"page_number": pn, "text": f"Page {pn}", "tokens": [], "pass_similarity": 1.0, "layout": "text"}
-                for pn in range(first, last + 1)
+                for pn in page_numbers
             }
         mock_chunk.side_effect = _fake_chunk
 
@@ -222,12 +237,12 @@ class TestOcrPagesParallel:
     def test_chunk_failure_returns_empty_for_those_pages(self, mock_chunk):
         from app.providers.ocr_sarvam import ocr_pages_parallel
 
-        def _fail_second(pdf_path, first, last, lang):
-            if first == 4:
+        def _fail_second(pdf_path, page_numbers, lang):
+            if 4 in page_numbers:
                 raise RuntimeError("Chunk failed")
             return {
                 pn: {"page_number": pn, "text": f"Page {pn}", "tokens": [], "pass_similarity": 1.0, "layout": "text"}
-                for pn in range(first, last + 1)
+                for pn in page_numbers
             }
         mock_chunk.side_effect = _fail_second
 
@@ -242,6 +257,29 @@ class TestOcrPagesParallel:
         assert result[4]["text"] == ""
         assert result[5]["text"] == ""
         assert result[6]["text"] == ""
+
+    @patch("app.providers.ocr_sarvam.ocr_pdf_chunk")
+    def test_non_contiguous_pages_no_extra(self, mock_chunk):
+        """Non-contiguous pages should NOT include unrequested pages."""
+        from app.providers.ocr_sarvam import ocr_pages_parallel
+
+        def _track_chunk(pdf_path, page_numbers, lang):
+            return {
+                pn: {"page_number": pn, "text": f"Page {pn}", "tokens": [], "pass_similarity": 1.0, "layout": "text"}
+                for pn in page_numbers
+            }
+        mock_chunk.side_effect = _track_chunk
+
+        result = ocr_pages_parallel(
+            Path("/tmp/test.pdf"),
+            pages=[1, 3, 7, 12],
+            sarvam_lang="kn-IN",
+            chunk_size=2,
+        )
+
+        assert set(result.keys()) == {1, 3, 7, 12}
+        assert 2 not in result
+        assert 8 not in result
 
 
 class TestLanguageRouterSarvam:

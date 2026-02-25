@@ -74,8 +74,7 @@ class TestBuildPages(unittest.TestCase):
         self.assertEqual(pages[0].text, "only native")
         self.assertEqual(pages[0].tokens, [])
 
-    def test_prefer_native_text_with_native_content_uses_native(self) -> None:
-        # When prefer_native_text=True and native has content, we use native even if selected_source was ocr.
+    def test_selected_source_ocr_overrides_prefer_native(self) -> None:
         native_map = {1: "native"}
         ocr_pages = {1: {"text": "ocr", "tokens": []}}
         pages = _build_pages(
@@ -85,6 +84,20 @@ class TestBuildPages(unittest.TestCase):
             ocr_used={1},
             prefer_native_text=True,
             selected_sources={1: "ocr"},
+        )
+        self.assertEqual(pages[0].source, "ocr")
+        self.assertEqual(pages[0].text, "ocr")
+
+    def test_prefer_native_text_when_no_selected_source(self) -> None:
+        native_map = {1: "native"}
+        ocr_pages = {1: {"text": "ocr", "tokens": []}}
+        pages = _build_pages(
+            page_count=1,
+            native_pages=native_map,
+            ocr_pages=ocr_pages,
+            ocr_used={1},
+            prefer_native_text=True,
+            selected_sources=None,
         )
         self.assertEqual(pages[0].source, "native")
         self.assertEqual(pages[0].text, "native")
