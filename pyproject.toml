@@ -11,7 +11,7 @@ dependencies = [
     "pytesseract==0.3.10",
     "pillow==10.2.0",
     "pdf2image==1.17.0",
-    "pydantic==2.6.1",
+    "pydantic>=2.7.1",
     "opencv-python==4.11.0.86",
     "pymupdf>=1.24.0",
 ]
@@ -23,7 +23,7 @@ db = [
     "supabase>=2.0.0",
 ]
 sarvam = [
-    "sarvamai",
+    "sarvamai>=0.1.20",
 ]
 
 [tool.setuptools.packages.find]
