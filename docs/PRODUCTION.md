@@ -17,6 +17,15 @@ Set these in Railway → service → **Variables** and **Redeploy**:
 | `JOB_STORE_DIR` | `/tmp/job_store` | Persists async job state to disk so jobs survive restarts. Without this, a restart causes "Job not found" 404 on active jobs. |
 | `SAFE_BATCH_PAGES` | `2` | Pages rendered + OCR'd at a time in safe mode. Lower = less peak memory. Default is `3`; use `2` on free/starter tier. |
 
+## Sarvam Vision (regional language OCR)
+
+Sarvam Vision is a 3B-parameter VLM optimised for Indian scripts. When configured, it becomes the primary OCR engine for non-English languages (Kannada, Hindi, Tamil, Telugu). English continues to use Tesseract/Paddle unchanged. If `SARVAM_API_KEY` is not set, regional languages fall back to Tesseract exactly as before — zero behaviour change.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SARVAM_API_KEY` | `""` (disabled) | API subscription key from [dashboard.sarvam.ai](https://dashboard.sarvam.ai). Required to enable Sarvam Vision for regional language OCR. |
+| `SARVAM_CHUNK_PAGES` | `5` | Number of PDF pages per Sarvam API request. Chunks are processed in parallel. Increase for faster throughput; decrease if hitting API size limits (range 1–50). |
+
 ## Optional tuning variables
 
 | Variable | Default | Description |

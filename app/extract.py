@@ -24,6 +24,7 @@ from .config import (
     OCR_ENGINE,
     SAFE_BATCH_PAGES,
     SAFE_MODE,
+    SARVAM_CHUNK_PAGES,
 )
 from .ocr import extract_with_ocr, rerun_page_ocr
 from .pdf_text import (
@@ -110,6 +111,12 @@ LANGUAGE_QUALITY_OVERRIDES: dict[str, dict] = {
         "min_avg_confidence": 90.0,
         "max_low_conf_ratio": 0.6,
         "min_pass_similarity": 0.35,
+        "min_native_similarity": 0.0,
+    },
+    "sarvam": {
+        "min_avg_confidence": 0.0,
+        "max_low_conf_ratio": 1.0,
+        "min_pass_similarity": 0.0,
         "min_native_similarity": 0.0,
     },
 }
@@ -240,7 +247,32 @@ def _page_quality(
     retry_attempts: int,
     best_strategy: dict | None,
     quality_overrides: dict | None = None,
+    engine: str | None = None,
 ) -> QualityGate:
+    # Sarvam bypass: Sarvam doesn't return per-token confidence or dual-pass
+    # similarity, so skip confidence-based gates. Trust non-empty Sarvam text.
+    if engine == "sarvam" and ocr_page and ocr_page.get("text", "").strip():
+        ocr_text = ocr_page.get("text", "")
+        native_sim = (
+            similarity_ratio(native_text, ocr_text) if native_text and ocr_text else None
+        )
+        return QualityGate(
+            page_number=page_number,
+            status="approved",
+            layout=ocr_page.get("layout"),
+            page_type="sarvam",
+            avg_confidence=None,
+            low_conf_ratio=None,
+            dual_pass_similarity=None,
+            native_similarity=round(native_sim, 4) if native_sim is not None else None,
+            failed_gates=[],
+            retry_attempts=retry_attempts,
+            best_strategy=best_strategy,
+            accuracy_score=None,
+            decision="B",
+            selected_source="ocr",
+        )
+
     tokens = ocr_page.get("tokens", []) if ocr_page else []
     confidences = [token.get("confidence", 0.0) for token in tokens]
     high_conf = [c for c in confidences if c >= MIN_CONFIDENCE_FOR_AVG]
@@ -511,12 +543,42 @@ def extract_pdf(
     # -------------------------------------------------------------------
     pre_rendered_images = None
     ocr_pages: Dict[int, dict] = {}
+    sarvam_pages: set[int] = set()
+    used_sarvam = False
+    use_sarvam = resolved.sarvam_lang is not None
     use_paddle = (
         OCR_ENGINE == "paddleocr"
         and resolved.paddleocr_lang is not None
     )
 
-    if ocr_required and use_paddle:
+    if ocr_required and use_sarvam:
+        # ----- Sarvam Vision path (regional languages) -----
+        try:
+            from .providers.ocr_sarvam import is_available as sarvam_available, ocr_pages_parallel as sarvam_ocr
+
+            if sarvam_available():
+                sarvam_results = sarvam_ocr(
+                    validated_path,
+                    pages=sorted(ocr_required),
+                    sarvam_lang=resolved.sarvam_lang,
+                    chunk_size=SARVAM_CHUNK_PAGES,
+                )
+                non_empty = {pn: r for pn, r in sarvam_results.items() if r.get("text", "").strip()}
+                ocr_pages.update(non_empty)
+                if non_empty:
+                    used_sarvam = True
+                    sarvam_pages = set(non_empty.keys())
+                    ocr_required = ocr_required - sarvam_pages
+                if ocr_required:
+                    logger.info("Sarvam returned empty for %d page(s), falling back to Tesseract", len(ocr_required))
+                    use_sarvam = False
+            else:
+                use_sarvam = False
+        except Exception as exc:
+            logger.warning("Sarvam Vision failed, falling back: %s", exc)
+            use_sarvam = False
+
+    if ocr_required and use_paddle and not use_sarvam:
         # ----- PaddleOCR path -----
         try:
             from .providers.ocr_paddle import is_available as paddle_available, ocr_pages as paddle_ocr_pages
@@ -578,18 +640,20 @@ def extract_pdf(
                     ocr_pages[pn] = p
                 del batch_images
 
-    if not ocr_required and not native_text.strip():
+    all_ocr_pages = sarvam_pages | ocr_required
+
+    if not all_ocr_pages and not native_text.strip():
         raise PdfProcessingError("No text could be extracted from PDF.")
-    if ocr_required and not ocr_pages:
+    if all_ocr_pages and not ocr_pages:
         raise PdfProcessingError("OCR did not return any pages.")
 
     # -------------------------------------------------------------------
     # Step 4: Initial page assembly
     # -------------------------------------------------------------------
-    ocr_engine_name = "paddleocr" if use_paddle else "tesseract"
-    if ocr_required:
+    ocr_engine_name = "sarvam" if used_sarvam else ("paddleocr" if use_paddle else "tesseract")
+    if all_ocr_pages:
         prefer_native_text = force_ocr  # when force_ocr, prefer native text over OCR
-        pages = _build_pages(page_count, native_page_map, ocr_pages, ocr_required,
+        pages = _build_pages(page_count, native_page_map, ocr_pages, all_ocr_pages,
                              prefer_native_text=prefer_native_text, selected_sources=None)
         method = "hybrid" if not force_ocr else "ocr"
         engine = f"pymupdf+{ocr_engine_name}" if not force_ocr else ocr_engine_name
@@ -608,7 +672,7 @@ def extract_pdf(
     # Quality retries
     # -------------------------------------------------------------------
     retry_meta: dict[int, dict] = {}
-    if ocr_required:
+    if all_ocr_pages:
         for attempt in range(quality_retries):
             quality_pages: list[QualityGate] = []
             failures = []
@@ -620,9 +684,10 @@ def extract_pdf(
                     retry_meta.get(page_number, {}).get("attempts", 0),
                     ocr_pages.get(page_number, {}).get("strategy"),
                     quality_overrides,
+                    engine="sarvam" if page_number in sarvam_pages else None,
                 )
                 quality_pages.append(quality_gate)
-                if quality_gate.status != "approved" and page_number in ocr_required:
+                if quality_gate.status != "approved" and page_number in all_ocr_pages:
                     failures.append(page_number)
 
             if not failures:
@@ -668,6 +733,7 @@ def extract_pdf(
                 retry_meta.get(page_number, {}).get("attempts", 0),
                 ocr_pages.get(page_number, {}).get("strategy"),
                 quality_overrides,
+                engine="sarvam" if page_number in sarvam_pages else None,
             )
         )
     quality = _quality_summary(quality_pages_final, strict_quality, quality_overrides)
@@ -675,9 +741,9 @@ def extract_pdf(
         page.page_number: page.selected_source for page in quality_pages_final
     }
 
-    if ocr_required:
+    if all_ocr_pages:
         prefer_native_text = force_ocr
-        pages = _build_pages(page_count, native_page_map, ocr_pages, ocr_required,
+        pages = _build_pages(page_count, native_page_map, ocr_pages, all_ocr_pages,
                              prefer_native_text=prefer_native_text, selected_sources=selected_sources)
         full_text = "\n".join(page.text for page in pages if page.text).strip()
     else:

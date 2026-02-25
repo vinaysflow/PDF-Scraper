@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir --upgrade pip setuptools \
-    && pip install --no-cache-dir -e .
+    && pip install --no-cache-dir -e ".[sarvam]"
 
 ENV PORT=8000
 EXPOSE 8000

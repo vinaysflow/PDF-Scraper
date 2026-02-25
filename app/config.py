@@ -64,6 +64,12 @@ INCLUDE_BASE64_IMAGES: bool = _env_bool("INCLUDE_BASE64_IMAGES")
 API_KEY: str = os.environ.get("API_KEY", "")
 
 # ---------------------------------------------------------------------------
+# Sarvam AI settings (regional language OCR via Sarvam Vision)
+# ---------------------------------------------------------------------------
+SARVAM_API_KEY: str = os.environ.get("SARVAM_API_KEY", "")
+SARVAM_CHUNK_PAGES: int = _env_int("SARVAM_CHUNK_PAGES", default=5, lo=1, hi=50)
+
+# ---------------------------------------------------------------------------
 # Supabase settings
 # ---------------------------------------------------------------------------
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
@@ -82,6 +88,8 @@ def log_startup_config() -> None:
         f"EXTRACT_TABLES={EXTRACT_TABLES} EXTRACT_MATH={EXTRACT_MATH} "
         f"IMAGE_STORE_DIR={IMAGE_STORE_DIR} "
         f"INCLUDE_BASE64_IMAGES={INCLUDE_BASE64_IMAGES} "
+        f"SARVAM_API_KEY={'(set)' if SARVAM_API_KEY else '(not set)'} "
+        f"SARVAM_CHUNK_PAGES={SARVAM_CHUNK_PAGES} "
         f"SUPABASE_URL={'(set)' if SUPABASE_URL else '(not set)'}"
     )
     print(msg, flush=True)

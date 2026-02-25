@@ -22,6 +22,9 @@ diagrams = [
 db = [
     "supabase>=2.0.0",
 ]
+sarvam = [
+    "sarvamai",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

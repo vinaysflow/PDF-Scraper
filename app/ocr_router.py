@@ -11,6 +11,7 @@ LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
         "id": "english",
         "tesseract_lang": "eng",
         "paddleocr_lang": "en",
+        "sarvam_lang": None,
         "primary_engine": "tesseract",
         "quality_preset": "default",
         "preprocess": "standard",
@@ -19,7 +20,8 @@ LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
         "id": "kannada",
         "tesseract_lang": "kan",
         "paddleocr_lang": "kn",
-        "primary_engine": "tesseract",
+        "sarvam_lang": "kn-IN",
+        "primary_engine": "sarvam",
         "quality_preset": "kannada",
         "preprocess": "standard",
     },
@@ -27,7 +29,8 @@ LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
         "id": "hindi",
         "tesseract_lang": "hin",
         "paddleocr_lang": "hi",
-        "primary_engine": "tesseract",
+        "sarvam_lang": "hi-IN",
+        "primary_engine": "sarvam",
         "quality_preset": "default",
         "preprocess": "standard",
     },
@@ -35,7 +38,8 @@ LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
         "id": "tamil",
         "tesseract_lang": "tam",
         "paddleocr_lang": "ta",
-        "primary_engine": "tesseract",
+        "sarvam_lang": "ta-IN",
+        "primary_engine": "sarvam",
         "quality_preset": "default",
         "preprocess": "standard",
     },
@@ -43,7 +47,8 @@ LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
         "id": "telugu",
         "tesseract_lang": "tel",
         "paddleocr_lang": "te",
-        "primary_engine": "tesseract",
+        "sarvam_lang": "te-IN",
+        "primary_engine": "sarvam",
         "quality_preset": "default",
         "preprocess": "standard",
     },
@@ -70,6 +75,7 @@ class ResolvedOCRConfig:
 
     tesseract_lang: str
     paddleocr_lang: str | None
+    sarvam_lang: str | None
     quality_preset: str
     preprocess: str
     language_id: str  # canonical id for response (e.g. "kannada")
@@ -97,6 +103,7 @@ def resolve_ocr_config(
     return ResolvedOCRConfig(
         tesseract_lang=profile["tesseract_lang"],
         paddleocr_lang=profile.get("paddleocr_lang"),
+        sarvam_lang=profile.get("sarvam_lang"),
         quality_preset=profile.get("quality_preset", "default"),
         preprocess=profile.get("preprocess", "standard"),
         language_id=profile["id"],
