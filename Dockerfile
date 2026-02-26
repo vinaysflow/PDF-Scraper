@@ -19,8 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY . .
+RUN git rev-parse --short HEAD > /app/GIT_COMMIT || echo "unknown" > /app/GIT_COMMIT
 RUN pip install --no-cache-dir --upgrade pip setuptools \
     && pip install --no-cache-dir -e ".[sarvam]"
 

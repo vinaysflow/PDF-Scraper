@@ -169,7 +169,8 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    from .version import get_commit
+    return {"status": "ok", "commit": get_commit()}
 
 
 @app.get("/api/config")
