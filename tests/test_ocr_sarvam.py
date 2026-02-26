@@ -270,17 +270,18 @@ class TestOcrPagesParallel:
         mock_chunk.assert_not_called()
 
     @patch("app.providers.ocr_sarvam.ocr_pdf_chunk")
-    def test_chunk_failure_returns_empty_for_those_pages(self, mock_chunk):
+    def test_chunk_failure_retries_and_recovers_siblings(self, mock_chunk):
+        """When a chunk fails, retry logic recovers sibling pages individually."""
         from app.providers.ocr_sarvam import ocr_pages_parallel
 
-        def _fail_second(pdf_path, page_numbers, lang):
+        def _fail_page_4(pdf_path, page_numbers, lang, **kwargs):
             if 4 in page_numbers:
                 raise RuntimeError("Chunk failed")
             return {
                 pn: {"page_number": pn, "text": f"Page {pn}", "tokens": [], "pass_similarity": 1.0, "layout": "text"}
                 for pn in page_numbers
             }
-        mock_chunk.side_effect = _fail_second
+        mock_chunk.side_effect = _fail_page_4
 
         result = ocr_pages_parallel(
             Path("/tmp/test.pdf"),
@@ -290,9 +291,11 @@ class TestOcrPagesParallel:
         )
 
         assert result[1]["text"] == "Page 1"
-        assert result[4]["text"] == ""
-        assert result[5]["text"] == ""
-        assert result[6]["text"] == ""
+        assert result[2]["text"] == "Page 2"
+        assert result[3]["text"] == "Page 3"
+        assert result[4]["text"] == ""       # page 4 always fails
+        assert result[5]["text"] == "Page 5"  # recovered via single-page retry
+        assert result[6]["text"] == "Page 6"  # recovered via smaller chunk retry
 
     @patch("app.providers.ocr_sarvam.ocr_pdf_chunk")
     def test_non_contiguous_pages_no_extra(self, mock_chunk):

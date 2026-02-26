@@ -8,6 +8,13 @@ This provider splits a PDF into configurable-size chunks, processes them
 in parallel via the Sarvam Document Intelligence API, and returns results
 in the same format as the Tesseract/Paddle providers.
 
+Resilience features:
+- Progressive chunk downsizing: failed chunks are retried at half size,
+  then single-page, before giving up.
+- Output validation: returned text is checked for script purity (detects
+  garbled encoding from the native PDF text layer leaking through).
+- Structured logging: every chunk reports success/failure/retry counts.
+
 Usage::
 
     from app.providers.ocr_sarvam import is_available, ocr_pages_parallel
@@ -26,6 +33,7 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -33,7 +41,64 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Script ranges for output validation
+_INDIC_SCRIPT_RANGES: dict[str, tuple[int, int]] = {
+    "kn-IN": (0x0C80, 0x0CFF),   # Kannada
+    "hi-IN": (0x0900, 0x097F),   # Devanagari
+    "ta-IN": (0x0B80, 0x0BFF),   # Tamil
+    "te-IN": (0x0C00, 0x0C7F),   # Telugu
+}
+
+_FOREIGN_SCRIPT_RANGES = [
+    (0x0E00, 0x0E7F),   # Thai
+    (0x0D80, 0x0DFF),   # Sinhala
+    (0x1780, 0x17FF),   # Khmer
+    (0x0E80, 0x0EFF),   # Lao
+]
+
+_MIN_PURITY_THRESHOLD = 0.40
+
 _AVAILABLE: bool | None = None
+
+
+def _validate_output_text(text: str, sarvam_lang: str) -> bool:
+    """Check that returned text is actually in the expected script.
+
+    Returns True if the text looks like valid OCR output (correct script,
+    minimal foreign-script contamination). Returns False if it looks like
+    garbled native text leaked through.
+    """
+    if not text or not text.strip():
+        return False
+
+    expected_range = _INDIC_SCRIPT_RANGES.get(sarvam_lang)
+    if expected_range is None:
+        return True  # unknown language, skip validation
+
+    letter_total = 0
+    expected_count = 0
+    foreign_count = 0
+
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        cp = ord(ch)
+        letter_total += 1
+        if expected_range[0] <= cp <= expected_range[1]:
+            expected_count += 1
+        for lo, hi in _FOREIGN_SCRIPT_RANGES:
+            if lo <= cp <= hi:
+                foreign_count += 1
+                break
+
+    if letter_total < 5:
+        return True  # too few letters to judge (page numbers, etc.)
+
+    foreign_ratio = foreign_count / letter_total
+    if foreign_ratio > 0.05:
+        return False
+
+    return True
 
 
 def is_available() -> bool:
@@ -147,17 +212,20 @@ def ocr_pdf_chunk(
     page_numbers: list[int],
     sarvam_lang: str,
     output_format: str = "md",
+    validate_output: bool = True,
 ) -> dict[int, dict[str, Any]]:
     """Process a chunk of specific pages through the Sarvam Document Intelligence API.
 
     ``page_numbers`` is a list of 1-based page numbers to process.
     Retries up to ``_MAX_CHUNK_RETRIES`` times with exponential backoff on failure.
-    Returns a dict mapping page_number -> result dict compatible with the
-    Tesseract/Paddle output format.
+    When ``validate_output`` is True, each page's text is checked for script
+    purity — pages with garbled encoding are returned as empty so the caller
+    can retry or fall back.
     """
     import sarvamai as _sarvamai_sdk
     from ..config import SARVAM_API_KEY
 
+    chunk_label = f"pages {page_numbers[0]}–{page_numbers[-1]}" if len(page_numbers) > 1 else f"page {page_numbers[0]}"
     chunk_pdf = _extract_pages_pdf(pdf_path, page_numbers)
 
     try:
@@ -170,9 +238,10 @@ def ocr_pdf_chunk(
                     language=sarvam_lang,
                     output_format=output_format,
                 )
-                logger.info(
-                    "Sarvam job created for %d pages (%s), attempt %d: %s",
-                    len(page_numbers), sarvam_lang, attempt + 1, getattr(job, "job_id", "?"),
+                job_id = getattr(job, "job_id", "?")
+                print(
+                    f"[Sarvam] chunk {chunk_label} ({len(page_numbers)}p) → job {job_id} (attempt {attempt + 1}/{_MAX_CHUNK_RETRIES})",
+                    flush=True,
                 )
 
                 job.upload_file(str(chunk_pdf))
@@ -181,9 +250,9 @@ def ocr_pdf_chunk(
 
                 job_state = getattr(status, "job_state", None) or getattr(status, "state", "unknown")
                 if job_state not in ("Completed", "PartiallyCompleted"):
-                    logger.warning(
-                        "Sarvam job ended with state=%s for pages %s (attempt %d/%d)",
-                        job_state, page_numbers, attempt + 1, _MAX_CHUNK_RETRIES,
+                    print(
+                        f"[Sarvam] chunk {chunk_label} ended state={job_state} (attempt {attempt + 1}/{_MAX_CHUNK_RETRIES})",
+                        flush=True,
                     )
                     if attempt < _MAX_CHUNK_RETRIES - 1:
                         time.sleep(2 ** attempt)
@@ -198,29 +267,45 @@ def ocr_pdf_chunk(
                 page_texts = _parse_markdown_pages(output_zip_path, page_numbers)
 
                 results: dict[int, dict[str, Any]] = {}
+                valid_count = 0
                 for pn in page_numbers:
                     text = page_texts.get(pn, "")
-                    results[pn] = {
-                        "page_number": pn,
-                        "text": text,
-                        "tokens": [],
-                        "pass_similarity": 1.0,
-                        "layout": "text",
-                    }
+                    is_valid = (
+                        not validate_output
+                        or _validate_output_text(text, sarvam_lang)
+                    )
+                    if text.strip() and is_valid:
+                        results[pn] = {
+                            "page_number": pn,
+                            "text": text,
+                            "tokens": [],
+                            "pass_similarity": 1.0,
+                            "layout": "text",
+                        }
+                        valid_count += 1
+                    else:
+                        reason = "empty" if not text.strip() else "failed validation"
+                        logger.info("Sarvam page %d: %s", pn, reason)
+                        results[pn] = _empty_results_for_pages([pn])[pn]
+
+                print(
+                    f"[Sarvam] chunk {chunk_label} complete: {valid_count}/{len(page_numbers)} valid pages",
+                    flush=True,
+                )
                 return results
 
             except Exception as exc:
                 if attempt < _MAX_CHUNK_RETRIES - 1:
                     wait = 2 ** attempt
-                    logger.warning(
-                        "Sarvam attempt %d/%d failed for pages %s: %s — retrying in %ds",
-                        attempt + 1, _MAX_CHUNK_RETRIES, page_numbers, exc, wait,
+                    print(
+                        f"[Sarvam] chunk {chunk_label} attempt {attempt + 1} failed: {exc} — retrying in {wait}s",
+                        flush=True,
                     )
                     time.sleep(wait)
                 else:
-                    logger.warning(
-                        "Sarvam API failed after %d attempts for pages %s: %s",
-                        _MAX_CHUNK_RETRIES, page_numbers, exc,
+                    print(
+                        f"[Sarvam] chunk {chunk_label} FAILED after {_MAX_CHUNK_RETRIES} attempts: {exc}",
+                        flush=True,
                     )
                     return _empty_results_for_pages(page_numbers)
             finally:
@@ -246,35 +331,16 @@ def _empty_results_for_pages(page_numbers: list[int]) -> dict[int, dict[str, Any
     }
 
 
-def ocr_pages_parallel(
-    pdf_path: str | Path,
-    pages: list[int],
+def _run_chunks_parallel(
+    pdf_path: Path,
+    chunks: list[list[int]],
     sarvam_lang: str,
-    chunk_size: int = 5,
-    max_workers: int = 2,
+    max_workers: int,
 ) -> dict[int, dict[str, Any]]:
-    """Process pages through Sarvam Vision in parallel chunks.
-
-    Splits the page list into chunks of ``chunk_size`` pages, submits each
-    to Sarvam in parallel, and merges results. Only the requested pages are
-    sent to the API — no extra pages are included.
-    """
-    pdf_path = Path(pdf_path)
-    if not pages:
-        return {}
-
-    sorted_pages = sorted(pages)
-    chunks: list[list[int]] = [
-        sorted_pages[i : i + chunk_size]
-        for i in range(0, len(sorted_pages), chunk_size)
-    ]
-
-    logger.info(
-        "Sarvam: processing %d pages in %d chunk(s) of up to %d pages (%s)",
-        len(pages), len(chunks), chunk_size, sarvam_lang,
-    )
-
-    all_results: dict[int, dict[str, Any]] = {}
+    """Execute a list of chunks in parallel and return merged results."""
+    results: dict[int, dict[str, Any]] = {}
+    if not chunks:
+        return results
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(chunks))) as pool:
         futures = {
@@ -285,9 +351,97 @@ def ocr_pages_parallel(
             chunk = futures[future]
             try:
                 chunk_results = future.result()
-                all_results.update(chunk_results)
+                results.update(chunk_results)
             except Exception as exc:
-                logger.warning("Sarvam chunk %s raised: %s", chunk, exc)
-                all_results.update(_empty_results_for_pages(chunk))
+                print(f"[Sarvam] chunk {chunk} raised: {exc}", flush=True)
+                results.update(_empty_results_for_pages(chunk))
+
+    return results
+
+
+def ocr_pages_parallel(
+    pdf_path: str | Path,
+    pages: list[int],
+    sarvam_lang: str,
+    chunk_size: int = 5,
+    max_workers: int = 2,
+) -> dict[int, dict[str, Any]]:
+    """Process pages through Sarvam Vision in parallel chunks with resilience.
+
+    Processing strategy:
+    1. Split pages into chunks of ``chunk_size``, process in parallel.
+    2. Collect pages that returned empty (failed/garbled).
+    3. Retry failed pages in smaller chunks (half size).
+    4. Final retry: remaining failures as single-page calls.
+
+    This ensures a transient API failure for one chunk doesn't lose
+    all those pages permanently.
+    """
+    pdf_path = Path(pdf_path)
+    if not pages:
+        return {}
+
+    sorted_pages = sorted(pages)
+    total = len(sorted_pages)
+    chunks: list[list[int]] = [
+        sorted_pages[i : i + chunk_size]
+        for i in range(0, total, chunk_size)
+    ]
+
+    print(
+        f"[Sarvam] Pass 1: {total} pages → {len(chunks)} chunk(s) of ≤{chunk_size} ({sarvam_lang})",
+        flush=True,
+    )
+
+    # ── Pass 1: initial parallel processing ──
+    all_results = _run_chunks_parallel(pdf_path, chunks, sarvam_lang, max_workers)
+
+    failed_pages = sorted(
+        pn for pn, r in all_results.items()
+        if not r.get("text", "").strip()
+    )
+
+    # ── Pass 2: retry failed pages in smaller chunks ──
+    if failed_pages and chunk_size > 2:
+        smaller = max(2, chunk_size // 2)
+        retry_chunks = [
+            failed_pages[i : i + smaller]
+            for i in range(0, len(failed_pages), smaller)
+        ]
+        print(
+            f"[Sarvam] Pass 2: retrying {len(failed_pages)} failed pages in {len(retry_chunks)} chunk(s) of ≤{smaller}",
+            flush=True,
+        )
+        retry_results = _run_chunks_parallel(pdf_path, retry_chunks, sarvam_lang, max_workers)
+        for pn, r in retry_results.items():
+            if r.get("text", "").strip():
+                all_results[pn] = r
+
+        failed_pages = sorted(
+            pn for pn, r in all_results.items()
+            if not r.get("text", "").strip()
+        )
+
+    # ── Pass 3: final single-page retry for remaining failures ──
+    if failed_pages:
+        single_chunks = [[pn] for pn in failed_pages]
+        print(
+            f"[Sarvam] Pass 3: retrying {len(failed_pages)} pages individually",
+            flush=True,
+        )
+        single_results = _run_chunks_parallel(
+            pdf_path, single_chunks, sarvam_lang, max_workers,
+        )
+        for pn, r in single_results.items():
+            if r.get("text", "").strip():
+                all_results[pn] = r
+
+    # ── Summary ──
+    final_ok = sum(1 for r in all_results.values() if r.get("text", "").strip())
+    final_empty = total - final_ok
+    print(
+        f"[Sarvam] Done: {final_ok}/{total} pages OK, {final_empty} empty → Tesseract fallback",
+        flush=True,
+    )
 
     return all_results
