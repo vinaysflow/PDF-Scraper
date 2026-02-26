@@ -23,6 +23,7 @@ from .config import (
     INCLUDE_BASE64_IMAGES,
     OCR_ENGINE,
     SARVAM_CHUNK_PAGES,
+    SARVAM_MAX_WORKERS,
 )
 from .ocr import extract_with_ocr, rerun_page_ocr
 from .pdf_text import (
@@ -246,6 +247,7 @@ def _page_quality(
     best_strategy: dict | None,
     quality_overrides: dict | None = None,
     engine: str | None = None,
+    regional: bool = False,
 ) -> QualityGate:
     # Sarvam bypass: Sarvam doesn't return per-token confidence or dual-pass
     # similarity, so skip confidence-based gates. Trust non-empty Sarvam text.
@@ -303,7 +305,10 @@ def _page_quality(
         selected_source = "ocr"
     else:
         decision = "A"
-        selected_source = "native" if native_text.strip() else "ocr"
+        if regional:
+            selected_source = "ocr"
+        else:
+            selected_source = "native" if native_text.strip() else "ocr"
 
     if quality_overrides:
         max_low_conf_ratio = quality_overrides.get("max_low_conf_ratio", QUALITY_MAX_LOW_CONF_RATIO)
@@ -364,8 +369,9 @@ def _page_quality(
         # to the final output — auto-approve.
         page_type = "native_sufficient"
         failed: list[str] = []
-    elif (ocr_total_failure or ocr_unreliable) and native_sufficient:
+    elif (ocr_total_failure or ocr_unreliable) and native_sufficient and not regional:
         # OCR failed or is unreliable, but native has good text. Fall back to native.
+        # Skip for regional languages — native PDF text is usually garbled.
         page_type = "native_fallback"
         selected_source = "native"
         decision = "A"
@@ -496,9 +502,12 @@ def extract_pdf(
     # -------------------------------------------------------------------
     # Step 2: Determine which pages need OCR
     # -------------------------------------------------------------------
+    force_regional = resolved.sarvam_lang is not None
     ocr_required: set[int] = set()
-    if force_ocr:
+    if force_ocr or force_regional:
         ocr_required = set(range(1, page_count + 1))
+        if force_regional and not force_ocr:
+            print(f"[OCR routing] Regional language detected ({resolved.language_id}), forcing OCR for all {page_count} pages", flush=True)
     else:
         for pg in native_pages:
             if not page_has_text(pg, min_chars=MIN_NATIVE_CHARS):
@@ -511,7 +520,7 @@ def extract_pdf(
     ocr_pages: Dict[int, dict] = {}
     sarvam_pages: set[int] = set()
     used_sarvam = False
-    use_sarvam = resolved.sarvam_lang is not None
+    use_sarvam = force_regional
     use_paddle = (
         OCR_ENGINE == "paddleocr"
         and resolved.paddleocr_lang is not None
@@ -532,6 +541,7 @@ def extract_pdf(
                     pages=sorted(ocr_required),
                     sarvam_lang=resolved.sarvam_lang,
                     chunk_size=SARVAM_CHUNK_PAGES,
+                    max_workers=SARVAM_MAX_WORKERS,
                 )
                 non_empty = {pn: r for pn, r in sarvam_results.items() if r.get("text", "").strip()}
                 print(f"[OCR routing] Sarvam returned {len(non_empty)}/{len(sarvam_results)} non-empty pages", flush=True)
@@ -601,7 +611,7 @@ def extract_pdf(
     # -------------------------------------------------------------------
     ocr_engine_name = "sarvam" if used_sarvam else ("paddleocr" if use_paddle else "tesseract")
     if all_ocr_pages:
-        prefer_native_text = force_ocr  # when force_ocr, prefer native text over OCR
+        prefer_native_text = force_ocr and not force_regional
         pages = _build_pages(page_count, native_page_map, ocr_pages, all_ocr_pages,
                              prefer_native_text=prefer_native_text, selected_sources=None)
         method = "hybrid" if not force_ocr else "ocr"
@@ -634,6 +644,7 @@ def extract_pdf(
                     ocr_pages.get(page_number, {}).get("strategy"),
                     quality_overrides,
                     engine="sarvam" if page_number in sarvam_pages else None,
+                    regional=force_regional,
                 )
                 quality_pages.append(quality_gate)
                 if quality_gate.status != "approved" and page_number in all_ocr_pages:
@@ -683,6 +694,7 @@ def extract_pdf(
                 ocr_pages.get(page_number, {}).get("strategy"),
                 quality_overrides,
                 engine="sarvam" if page_number in sarvam_pages else None,
+                regional=force_regional,
             )
         )
     quality = _quality_summary(quality_pages_final, strict_quality, quality_overrides)
@@ -691,7 +703,7 @@ def extract_pdf(
     }
 
     if all_ocr_pages:
-        prefer_native_text = force_ocr
+        prefer_native_text = force_ocr and not force_regional
         pages = _build_pages(page_count, native_page_map, ocr_pages, all_ocr_pages,
                              prefer_native_text=prefer_native_text, selected_sources=selected_sources)
         full_text = "\n".join(page.text for page in pages if page.text).strip()

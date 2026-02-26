@@ -25,6 +25,12 @@ class TestConfig(unittest.TestCase):
         self.assertGreater(SAFE_BATCH_PAGES, 0)
         self.assertGreater(MAX_FILE_SIZE_BYTES, 0)
 
+    def test_sarvam_config_defaults(self) -> None:
+        from app.config import SARVAM_CHUNK_PAGES, SARVAM_MAX_WORKERS
+        self.assertEqual(SARVAM_CHUNK_PAGES, 5)
+        self.assertGreaterEqual(SARVAM_MAX_WORKERS, 1)
+        self.assertLessEqual(SARVAM_MAX_WORKERS, 8)
+
     def test_log_startup_config_runs(self) -> None:
         from app.config import log_startup_config
         # Should not raise.

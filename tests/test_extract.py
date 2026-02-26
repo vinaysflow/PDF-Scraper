@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from app.extract import (
     _build_pages,
     _calculate_stats,
+    _page_quality,
     _quality_summary,
 )
 from app.schema import (
@@ -101,6 +102,67 @@ class TestBuildPages(unittest.TestCase):
         )
         self.assertEqual(pages[0].source, "native")
         self.assertEqual(pages[0].text, "native")
+
+
+class TestPageQualityRegional(unittest.TestCase):
+    """Tests for _page_quality with the regional parameter."""
+
+    def test_regional_never_selects_native(self) -> None:
+        """When regional=True and accuracy is low, selected_source must still be 'ocr'."""
+        gate = _page_quality(
+            page_number=1,
+            native_text="garbled native text",
+            ocr_page={"text": "poor ocr", "tokens": []},
+            retry_attempts=0,
+            best_strategy=None,
+            quality_overrides=None,
+            engine=None,
+            regional=True,
+        )
+        self.assertEqual(gate.selected_source, "ocr")
+
+    def test_non_regional_selects_native_when_low_accuracy(self) -> None:
+        """Without regional=True, low accuracy should pick native text."""
+        gate = _page_quality(
+            page_number=1,
+            native_text="some native text",
+            ocr_page={"text": "completely different ocr", "tokens": []},
+            retry_attempts=0,
+            best_strategy=None,
+            quality_overrides=None,
+            engine=None,
+            regional=False,
+        )
+        self.assertEqual(gate.selected_source, "native")
+
+    def test_regional_with_sarvam_engine_still_approves(self) -> None:
+        """Sarvam bypass still works when regional=True."""
+        gate = _page_quality(
+            page_number=1,
+            native_text="garbled",
+            ocr_page={"text": "ಕನ್ನಡ ಪಠ್ಯ", "tokens": [], "layout": "text"},
+            retry_attempts=0,
+            best_strategy=None,
+            quality_overrides=None,
+            engine="sarvam",
+            regional=True,
+        )
+        self.assertEqual(gate.status, "approved")
+        self.assertEqual(gate.selected_source, "ocr")
+
+    def test_regional_with_empty_ocr_still_picks_ocr(self) -> None:
+        """Even when OCR is empty for regional, don't pick native (it's garbled)."""
+        gate = _page_quality(
+            page_number=1,
+            native_text="garbled native",
+            ocr_page={"text": "", "tokens": []},
+            retry_attempts=0,
+            best_strategy=None,
+            quality_overrides=None,
+            engine=None,
+            regional=True,
+        )
+        self.assertEqual(gate.selected_source, "ocr")
 
 
 class TestQualitySummary(unittest.TestCase):

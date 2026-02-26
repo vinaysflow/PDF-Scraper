@@ -104,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip LLM enrichment when generating question bank (uses rule-based fallback).",
     )
+    parser.add_argument(
+        "--fail-on-needs-review",
+        action="store_true",
+        help="Exit with code 3 if quality.status is not 'approved' (e.g. any page failed gates). "
+             "Use in scripts/CI to ensure extraction completed with zero quality errors.",
+    )
     return parser
 
 
@@ -149,6 +155,13 @@ def main() -> int:
             with open(args.question_bank, "w") as f:
                 f.write(qbank.model_dump_json(indent=2))
             print(f"Question bank written to {args.question_bank}", file=sys.stderr)
+        if args.fail_on_needs_review and result.quality and result.quality.status != "approved":
+            print(
+                f"Quality status is '{result.quality.status}' (expected 'approved'). "
+                "Some pages failed quality gates.",
+                file=sys.stderr,
+            )
+            return 3
         print(result.model_dump_json(indent=2))
         return 0
     except ExtractionError as exc:

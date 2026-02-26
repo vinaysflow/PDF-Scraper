@@ -177,8 +177,9 @@ class TestOcrPdfChunk:
         assert result[1]["pass_similarity"] == 1.0
         assert result[2]["text"] == "ಇನ್ನಷ್ಟು ಪಠ್ಯ"
 
+    @patch("app.providers.ocr_sarvam.time.sleep")
     @patch("app.providers.ocr_sarvam._extract_pages_pdf")
-    def test_api_failure_returns_empty(self, mock_extract):
+    def test_api_failure_retries_then_returns_empty(self, mock_extract, mock_sleep):
         from app.providers.ocr_sarvam import ocr_pdf_chunk
 
         mock_extract.return_value = Path("/tmp/fake_chunk.pdf")
@@ -192,6 +193,41 @@ class TestOcrPdfChunk:
         assert len(result) == 3
         for pn in [1, 2, 3]:
             assert result[pn]["text"] == ""
+        assert mock_sleep.call_count == 2
+
+    @patch("app.providers.ocr_sarvam.time.sleep")
+    @patch("app.providers.ocr_sarvam._extract_pages_pdf")
+    @patch("app.providers.ocr_sarvam._parse_markdown_pages")
+    def test_retry_succeeds_on_second_attempt(self, mock_parse, mock_extract, mock_sleep):
+        from app.providers.ocr_sarvam import ocr_pdf_chunk
+
+        mock_extract.return_value = Path("/tmp/fake_chunk.pdf")
+        mock_parse.return_value = {1: "ಕನ್ನಡ"}
+
+        call_count = {"n": 0}
+
+        mock_client = MagicMock()
+        mock_job = MagicMock()
+        mock_client.document_intelligence.create_job.return_value = mock_job
+        mock_status = MagicMock()
+        mock_status.job_state = "Completed"
+        mock_job.wait_until_complete.return_value = mock_status
+
+        mock_sarvamai = MagicMock()
+
+        def _client_factory(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise ConnectionError("Transient failure")
+            return mock_client
+
+        mock_sarvamai.SarvamAI.side_effect = _client_factory
+        with patch.dict("sys.modules", {"sarvamai": mock_sarvamai}):
+            with patch("app.config.SARVAM_API_KEY", "test-key"):
+                result = ocr_pdf_chunk(Path("/tmp/test.pdf"), [1], "kn-IN")
+
+        assert result[1]["text"] == "ಕನ್ನಡ"
+        assert mock_sleep.call_count == 1
 
 
 class TestOcrPagesParallel:

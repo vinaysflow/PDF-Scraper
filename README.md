@@ -239,6 +239,72 @@ Common error cases:
 
 These return clear error messages in the CLI and HTTP 400 responses in the API.
 
+## Ensuring zero errors
+
+To ensure a run extracted with no runtime or quality errors:
+
+1. **Exit code** — The CLI exits with `0` on success, `1` on extraction errors (e.g. empty PDF, missing binaries), `2` on unexpected errors. Use in scripts: `python -m app.cli file.pdf ... || exit 1`.
+2. **Quality status** — The JSON output includes `quality.status` (`"approved"` or `"needs_review"`). All pages pass gates only when `quality.status === "approved"`.
+3. **Strict exit on quality** — Pass `--fail-on-needs-review` so the CLI exits with code `3` if any page failed quality gates. This lets CI or scripts require both “no crash” and “all pages approved”:
+   ```
+   python -m app.cli /path/to/file.pdf --language kannada --fail-on-needs-review
+   ```
+   Exit codes: `0` = success and approved; `3` = success but quality needs_review; `1`/`2` = runtime error.
+
+## Ground-truth accuracy evaluation
+
+Quality gates (`quality.status = "approved"`) only confirm the pipeline's internal checks passed — they don't verify the extracted text is actually correct. To measure **real accuracy**, compare extraction output against human-verified reference text.
+
+### Ground-truth file format
+
+Create a JSON file mapping page numbers to reference text:
+
+```json
+{
+  "1": "ಸಂದರ್ಭ : ಈ ಮಾತನ್ನು ಲೇಖಕರು ...",
+  "2": "ದೇಶದ ಸಂರಕ್ಷಣೆಯಲ್ಲಿ ..."
+}
+```
+
+Or use the same `{ "pages": [ {"page_number": 1, "text": "..."} ] }` format as extraction output.
+
+### Run evaluation
+
+```bash
+python scripts/eval_ground_truth.py \
+    --extraction /path/to/extraction.json \
+    --ground-truth /path/to/ground_truth.json
+```
+
+This reports per-page **WER similarity** (word-level, 1.0 = perfect) and **CER** (character-level error rate, 0.0 = perfect) with aggregate mean/median/min/max.
+
+### Thresholds
+
+Pass `--min-wer-sim` and `--max-cer` to enforce accuracy thresholds:
+
+```bash
+python scripts/eval_ground_truth.py \
+    --extraction output.json \
+    --ground-truth gt.json \
+    --min-wer-sim 0.90 \
+    --max-cer 0.10
+```
+
+- Exit **0** = all thresholds met.
+- Exit **1** = one or more thresholds failed.
+- Exit **2** = invalid input (missing files, no overlapping pages).
+
+### Save a detailed report
+
+```bash
+python scripts/eval_ground_truth.py \
+    --extraction output.json \
+    --ground-truth gt.json \
+    --out eval_report.json
+```
+
+The report JSON includes per-page metrics, aggregate stats, threshold results, and lists of pages that failed.
+
 ## Tests
 
 Run unit tests (no external PDFs required):

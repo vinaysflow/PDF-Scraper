@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -138,6 +139,9 @@ def _parse_markdown_pages(zip_path: Path, page_numbers: list[int]) -> dict[int, 
     return page_texts
 
 
+_MAX_CHUNK_RETRIES = 3
+
+
 def ocr_pdf_chunk(
     pdf_path: Path,
     page_numbers: list[int],
@@ -147,6 +151,7 @@ def ocr_pdf_chunk(
     """Process a chunk of specific pages through the Sarvam Document Intelligence API.
 
     ``page_numbers`` is a list of 1-based page numbers to process.
+    Retries up to ``_MAX_CHUNK_RETRIES`` times with exponential backoff on failure.
     Returns a dict mapping page_number -> result dict compatible with the
     Tesseract/Paddle output format.
     """
@@ -154,55 +159,77 @@ def ocr_pdf_chunk(
     from ..config import SARVAM_API_KEY
 
     chunk_pdf = _extract_pages_pdf(pdf_path, page_numbers)
-    output_zip_path: Path | None = None
 
     try:
-        client = _sarvamai_sdk.SarvamAI(api_subscription_key=SARVAM_API_KEY)
+        for attempt in range(_MAX_CHUNK_RETRIES):
+            output_zip_path: Path | None = None
+            try:
+                client = _sarvamai_sdk.SarvamAI(api_subscription_key=SARVAM_API_KEY)
 
-        job = client.document_intelligence.create_job(
-            language=sarvam_lang,
-            output_format=output_format,
-        )
-        logger.info(
-            "Sarvam job created for %d pages (%s): %s",
-            len(page_numbers), sarvam_lang, getattr(job, "job_id", "?"),
-        )
+                job = client.document_intelligence.create_job(
+                    language=sarvam_lang,
+                    output_format=output_format,
+                )
+                logger.info(
+                    "Sarvam job created for %d pages (%s), attempt %d: %s",
+                    len(page_numbers), sarvam_lang, attempt + 1, getattr(job, "job_id", "?"),
+                )
 
-        job.upload_file(str(chunk_pdf))
-        job.start()
-        status = job.wait_until_complete()
+                job.upload_file(str(chunk_pdf))
+                job.start()
+                status = job.wait_until_complete()
 
-        job_state = getattr(status, "job_state", None) or getattr(status, "state", "unknown")
-        if job_state not in ("Completed", "PartiallyCompleted"):
-            logger.warning("Sarvam job ended with state=%s for pages %s", job_state, page_numbers)
-            return _empty_results_for_pages(page_numbers)
+                job_state = getattr(status, "job_state", None) or getattr(status, "state", "unknown")
+                if job_state not in ("Completed", "PartiallyCompleted"):
+                    logger.warning(
+                        "Sarvam job ended with state=%s for pages %s (attempt %d/%d)",
+                        job_state, page_numbers, attempt + 1, _MAX_CHUNK_RETRIES,
+                    )
+                    if attempt < _MAX_CHUNK_RETRIES - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    return _empty_results_for_pages(page_numbers)
 
-        fd, zip_name = tempfile.mkstemp(suffix=".zip")
-        os.close(fd)
-        output_zip_path = Path(zip_name)
-        job.download_output(str(output_zip_path))
+                fd, zip_name = tempfile.mkstemp(suffix=".zip")
+                os.close(fd)
+                output_zip_path = Path(zip_name)
+                job.download_output(str(output_zip_path))
 
-        page_texts = _parse_markdown_pages(output_zip_path, page_numbers)
+                page_texts = _parse_markdown_pages(output_zip_path, page_numbers)
 
-        results: dict[int, dict[str, Any]] = {}
-        for pn in page_numbers:
-            text = page_texts.get(pn, "")
-            results[pn] = {
-                "page_number": pn,
-                "text": text,
-                "tokens": [],
-                "pass_similarity": 1.0,
-                "layout": "text",
-            }
-        return results
+                results: dict[int, dict[str, Any]] = {}
+                for pn in page_numbers:
+                    text = page_texts.get(pn, "")
+                    results[pn] = {
+                        "page_number": pn,
+                        "text": text,
+                        "tokens": [],
+                        "pass_similarity": 1.0,
+                        "layout": "text",
+                    }
+                return results
 
-    except Exception as exc:
-        logger.warning("Sarvam API failed for pages %s: %s", page_numbers, exc)
+            except Exception as exc:
+                if attempt < _MAX_CHUNK_RETRIES - 1:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "Sarvam attempt %d/%d failed for pages %s: %s — retrying in %ds",
+                        attempt + 1, _MAX_CHUNK_RETRIES, page_numbers, exc, wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.warning(
+                        "Sarvam API failed after %d attempts for pages %s: %s",
+                        _MAX_CHUNK_RETRIES, page_numbers, exc,
+                    )
+                    return _empty_results_for_pages(page_numbers)
+            finally:
+                if output_zip_path is not None:
+                    output_zip_path.unlink(missing_ok=True)
+
         return _empty_results_for_pages(page_numbers)
     finally:
         chunk_pdf.unlink(missing_ok=True)
-        if output_zip_path is not None:
-            output_zip_path.unlink(missing_ok=True)
 
 
 def _empty_results_for_pages(page_numbers: list[int]) -> dict[int, dict[str, Any]]:
@@ -224,7 +251,7 @@ def ocr_pages_parallel(
     pages: list[int],
     sarvam_lang: str,
     chunk_size: int = 5,
-    max_workers: int = 4,
+    max_workers: int = 2,
 ) -> dict[int, dict[str, Any]]:
     """Process pages through Sarvam Vision in parallel chunks.
 
