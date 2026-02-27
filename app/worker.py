@@ -5,6 +5,7 @@ Uses a small ThreadPoolExecutor (1–2 workers) so the ASGI event loop is not bl
 
 from __future__ import annotations
 
+import gc
 import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,8 @@ def _run(job_id: str, pdf_path: str, extract_kwargs: dict[str, Any]) -> None:
     try:
         result = extract_pdf(pdf_path, **extract_kwargs)
         store.set_completed(job_id, result.model_dump())
+        del result
+        gc.collect()
     except Exception as exc:
         store.set_failed(job_id, f"{type(exc).__name__}: {exc}")
         traceback.print_exc()

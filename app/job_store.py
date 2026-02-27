@@ -65,9 +65,11 @@ class JobStore:
         with self._lock:
             entry = self._jobs.get(job_id)
             if entry is not None:
-                return self._entry_to_dict(entry)
+                needs_disk = entry.status == "completed" and entry.result is None
+                if not needs_disk:
+                    return self._entry_to_dict(entry)
 
-        # Try disk if not in memory
+        # Fall through to disk when result was freed from memory or entry not found
         if self._persist_dir:
             disk_path = self._persist_dir / f"{job_id}.json"
             if disk_path.exists():
@@ -95,6 +97,8 @@ class JobStore:
                 entry.result = result
                 entry.updated_at = time.time()
                 self._persist_to_disk(job_id, entry)
+                if self._persist_dir:
+                    entry.result = None
 
     def set_failed(self, job_id: str, error: str) -> None:
         with self._lock:
@@ -218,5 +222,5 @@ class JobStore:
 
 
 # Module-level singleton used by worker and API.
-_persist_dir = os.environ.get("JOB_STORE_DIR", "")
-store = JobStore(persist_dir=_persist_dir if _persist_dir else None)
+from .config import JOB_STORE_DIR as _JOB_STORE_DIR
+store = JobStore(persist_dir=_JOB_STORE_DIR if _JOB_STORE_DIR else None)

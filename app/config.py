@@ -71,6 +71,11 @@ SARVAM_CHUNK_PAGES: int = _env_int("SARVAM_CHUNK_PAGES", default=5, lo=1, hi=50)
 SARVAM_MAX_WORKERS: int = _env_int("SARVAM_MAX_WORKERS", default=2, lo=1, hi=8)
 
 # ---------------------------------------------------------------------------
+# Job store settings (disk persistence prevents in-memory result accumulation)
+# ---------------------------------------------------------------------------
+JOB_STORE_DIR: str = os.environ.get("JOB_STORE_DIR", "/tmp/job_store")
+
+# ---------------------------------------------------------------------------
 # Supabase settings
 # ---------------------------------------------------------------------------
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
@@ -92,7 +97,8 @@ def log_startup_config() -> None:
         f"SARVAM_API_KEY={'(set)' if SARVAM_API_KEY else '(not set)'} "
         f"SARVAM_CHUNK_PAGES={SARVAM_CHUNK_PAGES} "
         f"SARVAM_MAX_WORKERS={SARVAM_MAX_WORKERS} "
-        f"SUPABASE_URL={'(set)' if SUPABASE_URL else '(not set)'}"
+        f"SUPABASE_URL={'(set)' if SUPABASE_URL else '(not set)'} "
+        f"JOB_STORE_DIR={JOB_STORE_DIR}"
     )
     print(msg, flush=True)
     sys.stderr.write(msg + "\n")

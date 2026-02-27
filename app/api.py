@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import tempfile
 from pathlib import Path
@@ -153,6 +154,7 @@ async def _do_extract(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+        gc.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +171,19 @@ async def index():
 
 @app.get("/health")
 async def health():
+    import resource
     from .version import get_commit
-    return {"status": "ok", "commit": get_commit()}
+    from .job_store import store as _js
+    rusage = resource.getrusage(resource.RUSAGE_SELF)
+    rss_kb = rusage.ru_maxrss
+    if os.uname().sysname == "Darwin":
+        rss_kb = rss_kb // 1024
+    return {
+        "status": "ok",
+        "commit": get_commit(),
+        "memory_mb": round(rss_kb / 1024, 1),
+        "jobs_in_memory": len(_js),
+    }
 
 
 @app.get("/api/config")

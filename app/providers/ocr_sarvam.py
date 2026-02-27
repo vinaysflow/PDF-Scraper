@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 import unicodedata
 import zipfile
@@ -59,6 +60,28 @@ _FOREIGN_SCRIPT_RANGES = [
 _MIN_PURITY_THRESHOLD = 0.40
 
 _AVAILABLE: bool | None = None
+
+# Reusable Sarvam client singleton (avoids per-chunk TCP/TLS overhead)
+_client: Any = None
+_client_lock = threading.Lock()
+
+
+def _get_client() -> Any:
+    """Return a cached SarvamAI client, creating one on first call."""
+    global _client
+    with _client_lock:
+        if _client is None:
+            import sarvamai as _sdk
+            from ..config import SARVAM_API_KEY
+            _client = _sdk.SarvamAI(api_subscription_key=SARVAM_API_KEY)
+        return _client
+
+
+def _reset_client() -> None:
+    """Discard the cached client so the next call creates a fresh one."""
+    global _client
+    with _client_lock:
+        _client = None
 
 
 def _validate_output_text(text: str, sarvam_lang: str) -> bool:
@@ -138,7 +161,9 @@ def _extract_pages_pdf(pdf_path: Path, page_numbers: list[int]) -> Path:
                 idx = pn - 1
                 if 0 <= idx < len(src):
                     dst.insert_pdf(src, from_page=idx, to_page=idx)
-            tmp_path = Path(tempfile.mkstemp(suffix=".pdf")[1])
+            fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
+            os.close(fd)
+            tmp_path = Path(tmp_name)
             dst.save(str(tmp_path))
         finally:
             dst.close()
@@ -222,9 +247,6 @@ def ocr_pdf_chunk(
     purity — pages with garbled encoding are returned as empty so the caller
     can retry or fall back.
     """
-    import sarvamai as _sarvamai_sdk
-    from ..config import SARVAM_API_KEY
-
     chunk_label = f"pages {page_numbers[0]}–{page_numbers[-1]}" if len(page_numbers) > 1 else f"page {page_numbers[0]}"
     chunk_pdf = _extract_pages_pdf(pdf_path, page_numbers)
 
@@ -232,7 +254,7 @@ def ocr_pdf_chunk(
         for attempt in range(_MAX_CHUNK_RETRIES):
             output_zip_path: Path | None = None
             try:
-                client = _sarvamai_sdk.SarvamAI(api_subscription_key=SARVAM_API_KEY)
+                client = _get_client()
 
                 job = client.document_intelligence.create_job(
                     language=sarvam_lang,
@@ -295,6 +317,7 @@ def ocr_pdf_chunk(
                 return results
 
             except Exception as exc:
+                _reset_client()
                 if attempt < _MAX_CHUNK_RETRIES - 1:
                     wait = 2 ** attempt
                     print(
