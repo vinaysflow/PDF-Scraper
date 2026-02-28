@@ -16,7 +16,7 @@
 
 - The Dockerfile was updated to add system libs for OpenCV (`libgl1-mesa-glx`, etc.). Pull the latest code and push again:
   ```bash
-  cd "/Users/vinaytripathi/Documents/PDF scraper/pdf-ocr-mvp"
+  cd /path/to/pdf-ocr-mvp
   git pull origin main   # if you already pushed the fix
   git add . && git commit -m "Fix Dockerfile for Railway" && git push
   ```

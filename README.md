@@ -135,7 +135,7 @@ See `docs/PERFORMANCE.md` for more detail.
 
 The set of PDFs used to evaluate and tune this model is:
 
-- **Path:** `~/Downloads/Sample PDF FOR TESTING` (or set `TRAINING_PDF_DIR` to override)
+- **Path:** set `TRAINING_PDF_DIR` to point at your local test PDFs directory
 
 Contents: English 10th Science and Maths model papers (01–04) and question papers (01–04). Use this folder when comparing quality across runs or regressions.
 

@@ -47,7 +47,7 @@
 - **Training:** `training/README.md`, `training/train_tesseract.sh` — custom Tesseract model (e.g. `eng_custom`); docs mention `--ocr-lang` and `--tessdata-path` for use after training. No Karnataka/Kannada-specific instructions.
 
 ### Sample file you mentioned
-- **Path:** `/Users/vinaytripathi/Downloads/Kannada SL.pdf` — not in repo; no script or doc currently references it. “Sample exception extraction” for this file would need to be added (e.g. script or documented CLI command).
+- **Path:** `Kannada SL.pdf` (local test file, not in repo) — not in repo; no script or doc currently references it. “Sample exception extraction” for this file would need to be added (e.g. script or documented CLI command).
 
 ---
 

@@ -18,6 +18,12 @@ image_store/
 .DS_Store
 
 # Env and secrets
-.env
-.env.local
+.env*
+!.env.example
 *.pem
+
+# Job store persistence
+job_store/
+
+# Logs
+*.log
