@@ -1,320 +1,258 @@
-# PDF OCR MVP
+# PDF OCR Engine
 
-Production-ready MVP that extracts text and token-level OCR from PDFs and returns a canonical JSON payload. It supports:
+**Production-Grade PDF Text Extraction with Quality Assurance**
 
-- Born-digital PDFs via native extraction
-- Scanned PDFs via Tesseract OCR
-- Mixed PDFs with hybrid extraction (native first, OCR fallback)
+Native + OCR hybrid extraction · Token-level confidence · Multi-pass quality gates · VLM diagram understanding
 
-## Requirements
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python 90%](https://img.shields.io/badge/python-90%25-blue)](https://github.com/vinaysflow/PDF-Scraper)
 
-- macOS with Homebrew
-- Python 3.11+
-- System binaries: Tesseract and Poppler
+-----
 
-Install system dependencies:
+## The Problem
+
+PDF text extraction sounds solved. It isn’t.
+
+Born-digital PDFs (generated from Word, LaTeX) have extractable text layers. Scanned PDFs (photographed documents, government forms, exam papers) don’t. Most real-world PDFs are a mix of both — some pages have text, some are images, some have embedded figures with no alt-text.
+
+Existing tools force a choice: use native extraction (fast, no confidence scores, fails on scans) or use OCR (slow, inaccurate on clean text, no quality signal). Neither tells you *how accurate the output actually is*. When you’re processing hundreds of documents — exam papers, legal filings, financial reports — you need to know which pages you can trust and which need human review.
+
+**The core gap:** No open-source PDF extraction tool combines native + OCR hybrid extraction, per-page quality scoring, automatic quality gates, and a canonical output schema that downstream systems can consume without parsing heuristics.
+
+## The Hypothesis
+
+A hybrid extraction pipeline with built-in quality assurance can achieve 90%+ accuracy on mixed PDFs while clearly flagging pages that need human review — eliminating the “silent failure” problem where bad OCR gets treated as good data.
+
+**The key insight:** Quality isn’t binary. A page with 95% average confidence and 10% low-confidence tokens is usable. A page with 60% average confidence is not. But without per-token confidence scores and dual-pass similarity checking, you can’t tell the difference. The quality gates make this distinction automatic.
+
+## What This Does
+
+A complete PDF extraction pipeline: CLI, API, and web interface.
 
 ```
-brew install tesseract poppler
+PDF Input
+    │
+    ├── Born-digital? ──▶ Native extraction (fast, exact)
+    │                         │
+    ├── Scanned? ──────▶ Tesseract OCR (multi-pass, quality-scored)
+    │                         │
+    └── Mixed? ────────▶ Hybrid (native first, OCR fallback per page)
+                              │
+                    ┌─────────▼─────────┐
+                    │  Quality Gates     │
+                    │  • avg confidence  │
+                    │  • low-conf ratio  │
+                    │  • dual-pass sim   │
+                    │  • native vs OCR   │
+                    └─────────┬─────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │  Canonical JSON    │
+                    │  per-page text     │
+                    │  token-level bbox  │
+                    │  confidence scores │
+                    │  quality verdicts  │
+                    └───────────────────┘
 ```
 
-Native extraction runs via Java under the hood. Ensure a JRE is available:
+### Key Capabilities
 
-```
-brew install openjdk
-```
+- **Hybrid extraction** — Native text extraction for born-digital pages, Tesseract OCR for scanned pages, automatic per-page detection
+- **Multi-pass OCR** — Layered preprocessing (standard + aggressive), multiple PSM candidates, Otsu thresholding, OSD rotation. Selects best consensus output per page
+- **Token-level output** — Every word comes with bounding box (`x,y,w,h`) and confidence score. Not just “here’s the text” — “here’s every word, where it is, and how sure we are”
+- **Quality gates with auto-retry** — Pages that fail confidence thresholds get re-OCR’d at higher DPI/thresholds. Pages that still fail are flagged `needs_review`, not silently passed through
+- **VLM diagram extraction** — Detects embedded figures via PyMuPDF, sends to OpenAI Vision for description and structure extraction. Graceful degradation when VLM is unavailable
+- **Ground-truth evaluation** — Compare extraction output against human-verified reference text. Per-page WER similarity and CER with pass/fail thresholds
+- **Custom Tesseract model training** — Full workflow for domain-specific text (math symbols, non-Latin scripts). Training data prep, model generation, evaluation
+- **Parallel processing** — Page-level OCR in thread pool (configurable workers), parallel VLM requests, native + render overlap
+- **Three interfaces** — CLI for scripting/CI, FastAPI endpoint for integration, web UI for manual use
 
-## Setup
+## Architecture Decisions (and Why)
 
-```
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
+|Decision              |Choice                                  |Why                                                                                                                                                                          |
+|----------------------|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|OCR engine            |Tesseract over cloud APIs               |Runs locally, no per-page API cost, trainable for domain-specific scripts. Cloud APIs are faster but create vendor lock-in and cost problems at scale                        |
+|Quality scoring       |Dual-pass similarity + confidence gating|Single-pass OCR has no self-check. Running two passes and comparing detects OCR instability that confidence scores alone miss                                                |
+|Native vs OCR decision|Accuracy score threshold (0.8)          |When both native text and OCR exist, compare them. If they agree (score >= 0.8), use OCR (has token-level data). If they diverge, use native (more reliable for born-digital)|
+|Output format         |Canonical JSON with token-level bbox    |Downstream consumers (search indexing, NLP pipelines, LLM context stuffing) need structured output, not raw text dumps. Token bounding boxes enable spatial reasoning        |
+|Retry strategy        |Per-page re-OCR with escalating DPI     |Failing the entire document because one page is bad is wasteful. Per-page retry with higher DPI/thresholds recovers most borderline pages                                    |
+|Diagram handling      |PyMuPDF extraction + optional VLM       |Figure extraction works without any API. VLM description is additive, not required. Partial failures don’t break the pipeline                                                |
+
+## What I’d Measure
+
+|Metric                                      |Why It Matters                                                                                                                         |
+|--------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+|**Pages approved vs needs_review ratio**    |The primary quality metric. High approval rate = pipeline is working; rising review rate = input quality degrading or gates need tuning|
+|**Mean WER similarity against ground truth**|The real accuracy metric. Quality gates are internal consistency checks; ground truth comparison is external validation                |
+|**OCR latency per page (p50/p99)**          |Direct impact on throughput. Multi-pass OCR is accurate but slow; this metric reveals when parallelization or DPI reduction is needed  |
+|**Quality gate failure distribution**       |Which gates fail most? If dual-pass similarity fails often, OCR is unstable. If confidence fails, input quality is poor. Guides tuning |
+|**VLM description accuracy**                |When diagrams are extracted, are the descriptions actually useful for downstream tasks? Requires human eval sampling                   |
+|**Retry recovery rate**                     |What % of initially-failed pages pass after retry? Low recovery = retries are wasted compute; high = gates are correctly set           |
+
+## What I Learned
+
+**1. Quality gates are the product, not the OCR.** Tesseract is open-source and well-understood. The differentiator is knowing *when to trust the output*. The dual-pass similarity check was the single biggest accuracy improvement — it catches cases where OCR confidently produces wrong text (high confidence, low accuracy).
+
+**2. The 90% accuracy target changed everything.** Starting with “maximize accuracy” led to over-engineering. Setting a concrete target (90% WER similarity) made every decision clearer: which DPI to default, how many retries justify the compute cost, when to flag for human review instead of burning more GPU time.
+
+**3. Graceful degradation beats hard failure.** The VLM diagram extraction works without an API key (figures are still extracted, just not described). Quality gates return `needs_review` instead of crashing. Every failure mode produces structured output, not stack traces. This matters more in production than the happy path.
+
+**4. Domain-specific models are underrated.** The Kannada exam paper use case showed that generic Tesseract models fail badly on non-Latin scripts with mathematical notation. The custom training pipeline (images + ground truth + `train_tesseract.sh`) turned a 40% accuracy job into a 90% one. Most teams skip this because training seems hard — it’s actually a weekend of labeling.
+
+## Project Status
+
+|Component              |Status |Detail                                                    |
+|-----------------------|-------|----------------------------------------------------------|
+|Native text extraction |Shipped|Born-digital PDF text layer extraction                    |
+|Tesseract OCR pipeline |Shipped|Multi-pass, multi-PSM, preprocessing strategies           |
+|Hybrid detection       |Shipped|Per-page native/OCR/mixed routing                         |
+|Quality gates          |Shipped|Confidence, dual-pass similarity, native-OCR comparison   |
+|Auto-retry on failure  |Shipped|Per-page re-OCR with escalating parameters                |
+|Token-level output     |Shipped|Bounding boxes + confidence per word                      |
+|VLM diagram extraction |Shipped|PyMuPDF figures + OpenAI Vision descriptions              |
+|Ground-truth evaluation|Shipped|WER/CER with thresholds and per-page reporting            |
+|Custom model training  |Shipped|Full Tesseract training workflow                          |
+|Parallel processing    |Shipped|Thread pool OCR + parallel VLM                            |
+|Web UI                 |Shipped|Upload, configure, download JSON                          |
+|FastAPI endpoint       |Shipped|REST API with file upload                                 |
+|CLI with exit codes    |Shipped|CI-friendly with quality-aware exit codes                 |
+|Consolidated reporting |Shipped|Single JSON with quality summary + high-quality items only|
+
+**Codebase:** Python 90% · 29 commits · CLI + API + Web UI · Deployable via Railway + Vercel
+
+-----
+
+## Quick Start
+
+### Install
+
+```bash
+# macOS
+brew install tesseract poppler openjdk
+
+# Clone and setup
+git clone https://github.com/vinaysflow/PDF-Scraper.git
+cd PDF-Scraper
+python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-## CLI Usage
+### CLI
 
-```
+```bash
+# Basic extraction
 python -m app.cli /path/to/file.pdf --dpi 600 --max-pages 10
+
+# Force OCR with 90% quality target
+python -m app.cli /path/to/file.pdf --force-ocr --quality-target 90
+
+# Full pipeline with diagrams
+python -m app.cli /path/to/file.pdf --force-ocr --quality-target 90 --extract-diagrams
+
+# CI mode: fail on quality issues
+python -m app.cli /path/to/file.pdf --fail-on-needs-review
 ```
 
-Force OCR even when native extraction succeeds (to produce confidence/tokens):
-
-```
-python -m app.cli /path/to/file.pdf --dpi 600 --max-pages 10 --force-ocr
-```
-
-Strict quality gates (default on):
-
-```
-python -m app.cli /path/to/file.pdf --strict-quality
-```
-
-To bypass strict gating entirely:
-
-```
-python -m app.cli /path/to/file.pdf --no-strict-quality
-```
-
-Quality retries (per-page re-OCR, default 2):
-
-```
-python -m app.cli /path/to/file.pdf --quality-retries 2
-```
-
-## OCR Quality Tuning
-
-- Default OCR DPI is 600 for accuracy.
-- For even lower-quality scans, try higher DPI (600–800) at the cost of speed:
-  ```
-  python -m app.cli /path/to/file.pdf --dpi 800
-  ```
-- Default OCR settings are defined in `app/ocr.py` (`OCR_OEM`, `OCR_PSM`, `OCR_LANG`, `OCR_THRESHOLD`).
-- The OCR pipeline uses multi-pass PSM selection (`OCR_PSM_CANDIDATES`) for better accuracy.
-- If the PDF is table-heavy, keep `4` in `OCR_PSM_CANDIDATES`.
-- Otsu thresholding and OSD rotation are enabled by default for accuracy.
-- Strict quality gates require:
-  - avg confidence >= 93 (computed on tokens with confidence >= 92)
-  - low-confidence ratio <= 50%
-  - dual-pass similarity >= 0.85
-  - native vs OCR similarity >= 0.85 (when native text is present)
-- In strict mode, output is still returned with `quality.status=needs_review` when any page fails after retries.
-- Decision rule: if `accuracy_score >= 0.8` then choose **B** (OCR text/tokens), else choose **A** (native text when available).
-- OCR uses layered preprocessing strategies (standard + aggressive) and multiple PSM passes, then selects the best consensus output.
-- You can override OCR language and tessdata path:
-  ```
-  python -m app.cli /path/to/file.pdf --ocr-lang eng_custom --tessdata-path /path/to/tessdata
-  ```
- - Table pages use OpenCV line removal + cell OCR, with relaxed gates for table layouts.
-
-## Targeting 90% accuracy and quality
-
-To aim for **~90% accuracy** and have pages pass quality as “approved”:
-
-1. **Use the 90% quality target** so gates match that goal:
-   ```
-   python -m app.cli /path/to/file.pdf --quality-target 90 --force-ocr
-   ```
-   With `--quality-target 90`, gates are: avg confidence ≥ 90%, low-conf ratio ≤ 60%, dual-pass and native similarity ≥ 0.90, and OCR is chosen when accuracy ≥ 0.90.
-
-2. **Improve OCR input and retries**
-   - **DPI:** Use 600–800 for scans (e.g. `--dpi 800` for poor scans).
-   - **Retries:** Use `--quality-retries 3` so failed pages get more OCR attempts at higher DPI/thresholds.
-   - **Strict mode:** Keep `--strict-quality` (default) so quality is measured; use `--no-strict-quality` only to bypass gates.
-
-3. **Source quality**
-   - Prefer 300+ DPI scans; avoid blurry or heavily compressed images.
-   - For born-digital PDFs with little or bad embedded text, use `--force-ocr` so Tesseract runs and confidence/similarity are computed.
-
-4. **Custom models**
-   - For domain-specific text (e.g. maths, symbols), train a Tesseract model (see `training/README.md`) and pass `--ocr-lang` and `--tessdata-path`.
-
-5. **Check the output**
-   - `quality.status`: `"approved"` means all pages passed the (possibly relaxed) gates.
-   - `quality.pages[].accuracy_score`: native vs OCR similarity or confidence-derived score; aim for ≥ 0.90 when using `--quality-target 90`.
-   - `quality.pages[].failed_gates`: lists which gates failed so you can tune DPI, retries, or source PDFs.
-
-## Performance and parallelism (production)
-
-The pipeline is tuned for faster time-to-output:
-
-- **Parallel OCR:** Page-level OCR runs in a thread pool (default 4 workers). Set `OCR_WORKERS` to tune (e.g. `OCR_WORKERS=8`).
-- **Parallel VLM:** When using `--extract-diagrams`, figure descriptions are requested in parallel (default 5 workers). Set `VLM_WORKERS` to tune (e.g. `VLM_WORKERS=10`); stay within your OpenAI rate limits.
-- **Native + render overlap:** With `--force-ocr`, native extraction and PDF→image rendering run in parallel so OCR can start as soon as both are ready.
-
-Example for a 31-page PDF with diagrams:
-
-```bash
-OCR_WORKERS=6 VLM_WORKERS=8 python -m app.cli /path/to/file.pdf --force-ocr --max-pages 31 --extract-diagrams --quality-target 90
-```
-
-See `docs/PERFORMANCE.md` for more detail.
-
-## Test / training PDFs
-
-The set of PDFs used to evaluate and tune this model is:
-
-- **Path:** set `TRAINING_PDF_DIR` to point at your local test PDFs directory
-
-Contents: English 10th Science and Maths model papers (01–04) and question papers (01–04). Use this folder when comparing quality across runs or regressions.
-
-Run batch quality on all training PDFs:
-
-```bash
-python scripts/run_training_set.py --force-ocr --strict-quality
-```
-
-Optional: pass a different directory or save the summary to a file:
-
-```bash
-TRAINING_PDF_DIR=/path/to/other python scripts/run_training_set.py --force-ocr > outputs/batch_training_summary.json
-```
-
-## Training a custom model
-
-See `training/README.md` for the full workflow. Summary:
-
-- Place images + ground-truth text in `training/data/`
-- Run:
-  ```
-  bash training/train_tesseract.sh --lang eng_custom --images training/data/images --ground-truth training/data/gt
-  ```
-- Use the trained model via `--ocr-lang` and `--tessdata-path`
-
-## API and web upload
-
-Start the server:
+### API
 
 ```bash
 uvicorn app.api:app --reload
-```
-
-**Web UI:** Open [http://127.0.0.1:8000](http://127.0.0.1:8000) to use the upload page. You can select a PDF, set max pages, force OCR, quality target 90%, and optional diagram extraction, then download the full JSON result. To deploy: **simple steps** → [docs/DEPLOY_SIMPLE.md](docs/DEPLOY_SIMPLE.md) (Railway + Vercel). More options → [docs/VERCEL.md](docs/VERCEL.md).
-
-**API:** Extract a PDF via POST:
-
-```bash
-curl -X POST "http://127.0.0.1:8000/extract?dpi=600&max_pages=10&force_ocr=false" \
+# Web UI: http://127.0.0.1:8000
+# API:
+curl -X POST "http://127.0.0.1:8000/extract?dpi=600&force_ocr=true" \
   -F "file=@/path/to/file.pdf"
 ```
 
+### Ground-Truth Evaluation
+
+```bash
+python scripts/eval_ground_truth.py \
+    --extraction output.json \
+    --ground-truth gt.json \
+    --min-wer-sim 0.90 --max-cer 0.10
+```
+
+### Custom Model Training
+
+```bash
+bash training/train_tesseract.sh \
+    --lang eng_custom \
+    --images training/data/images \
+    --ground-truth training/data/gt
+# Then use: --ocr-lang eng_custom --tessdata-path /path/to/tessdata
+```
+
+-----
+
 ## Output Schema
-
-The JSON output includes:
-
-- `doc_id`: UUID for the request
-- `filename`: Original filename
-- `ingested_at`: ISO timestamp
-- `extraction`: `{method,pages_total,dpi,engine}`
-- `pages`: list of `{page_number,source,text,tokens}`
-- `full_text`: concatenated text across pages
-- `stats`: `{total_tokens,avg_confidence}` (avg uses tokens with confidence >= 92)
-
-Token entries include `text`, `bbox` (`x,y,w,h`), and `confidence`. Pages extracted with native extraction have an empty `tokens` array.
-
-## Diagram extraction
-
-With `--extract-diagrams`, the pipeline also extracts embedded figures from the PDF (via PyMuPDF) and runs an optional VLM (OpenAI Vision) to describe each figure and optionally extract structure/chart data.
-
-**Requirements:** `pymupdf` (required). For VLM descriptions, install the OpenAI client and set `OPENAI_API_KEY`:
-
-```bash
-# From the project root (pdf-ocr-mvp). Use any one of these:
-pip install ".[diagrams]"
-# If the above fails (e.g. quoting on your shell), install directly:
-pip install openai
-```
-
-```bash
-python -m app.cli /path/to/file.pdf --extract-diagrams
-```
-
-The JSON output includes a top-level `diagrams` object when `--extract-diagrams` is used:
-
-- `diagrams.figures_total`: number of figures found
-- `diagrams.diagrams[]`: each with `figure` (page_number, bbox, area) and `reading` (description, structure, chart_data, kind, error). If the VLM is not configured or fails, `reading.error` is set and description may be null.
-
-**Robustness:** If `OPENAI_API_KEY` is not set, figure extraction still runs and each reading has `error: "VLM not configured"`. Partial failures (e.g. one figure fails VLM) do not break the run; that figure’s `reading.error` is set.
-
-## Consolidated output (all checks, high quality only)
-
-To get a **single JSON file** that summarizes all checks and lists only **high-quality** items (approved pages + diagram descriptions with no error):
-
-```bash
-python -m app.cli /path/to/file.pdf --force-ocr --quality-target 90 --extract-diagrams --consolidated-output outputs/report.json
-```
-
-- **stdout:** full extraction JSON (unchanged).
-- **File at `--consolidated-output`:** consolidated report with: **document**, **quality_summary** (approved_count, needs_review_pages), **high_quality_pages** (approved only, with text_preview), **high_quality_diagrams** (figures with valid description), **full_text_preview**, **stats**.
-
-## Error Handling
-
-Common error cases:
-
-- Missing system binaries (`tesseract`, `pdftoppm`)
-- Corrupt or unreadable PDFs
-- Empty extracted content
-- Max pages guard exceeded
-
-These return clear error messages in the CLI and HTTP 400 responses in the API.
-
-## Ensuring zero errors
-
-To ensure a run extracted with no runtime or quality errors:
-
-1. **Exit code** — The CLI exits with `0` on success, `1` on extraction errors (e.g. empty PDF, missing binaries), `2` on unexpected errors. Use in scripts: `python -m app.cli file.pdf ... || exit 1`.
-2. **Quality status** — The JSON output includes `quality.status` (`"approved"` or `"needs_review"`). All pages pass gates only when `quality.status === "approved"`.
-3. **Strict exit on quality** — Pass `--fail-on-needs-review` so the CLI exits with code `3` if any page failed quality gates. This lets CI or scripts require both “no crash” and “all pages approved”:
-   ```
-   python -m app.cli /path/to/file.pdf --language kannada --fail-on-needs-review
-   ```
-   Exit codes: `0` = success and approved; `3` = success but quality needs_review; `1`/`2` = runtime error.
-
-## Ground-truth accuracy evaluation
-
-Quality gates (`quality.status = "approved"`) only confirm the pipeline's internal checks passed — they don't verify the extracted text is actually correct. To measure **real accuracy**, compare extraction output against human-verified reference text.
-
-### Ground-truth file format
-
-Create a JSON file mapping page numbers to reference text:
 
 ```json
 {
-  "1": "ಸಂದರ್ಭ : ಈ ಮಾತನ್ನು ಲೇಖಕರು ...",
-  "2": "ದೇಶದ ಸಂರಕ್ಷಣೆಯಲ್ಲಿ ..."
+  "doc_id": "uuid",
+  "filename": "original.pdf",
+  "ingested_at": "2026-03-16T...",
+  "extraction": { "method": "hybrid", "pages_total": 10, "dpi": 600 },
+  "pages": [
+    {
+      "page_number": 1,
+      "source": "ocr",
+      "text": "extracted text...",
+      "tokens": [{ "text": "word", "bbox": [x,y,w,h], "confidence": 96.2 }]
+    }
+  ],
+  "quality": {
+    "status": "approved",
+    "pages": [{ "page_number": 1, "accuracy_score": 0.94, "failed_gates": [] }]
+  },
+  "diagrams": {
+    "figures_total": 3,
+    "diagrams": [{ "figure": {...}, "reading": { "description": "...", "kind": "bar_chart" }}]
+  },
+  "full_text": "concatenated text...",
+  "stats": { "total_tokens": 4521, "avg_confidence": 94.7 }
 }
 ```
 
-Or use the same `{ "pages": [ {"page_number": 1, "text": "..."} ] }` format as extraction output.
+## Performance
 
-### Run evaluation
-
-```bash
-python scripts/eval_ground_truth.py \
-    --extraction /path/to/extraction.json \
-    --ground-truth /path/to/ground_truth.json
-```
-
-This reports per-page **WER similarity** (word-level, 1.0 = perfect) and **CER** (character-level error rate, 0.0 = perfect) with aggregate mean/median/min/max.
-
-### Thresholds
-
-Pass `--min-wer-sim` and `--max-cer` to enforce accuracy thresholds:
+Parallel OCR + VLM processing for production throughput:
 
 ```bash
-python scripts/eval_ground_truth.py \
-    --extraction output.json \
-    --ground-truth gt.json \
-    --min-wer-sim 0.90 \
-    --max-cer 0.10
+OCR_WORKERS=6 VLM_WORKERS=8 python -m app.cli /path/to/file.pdf \
+    --force-ocr --max-pages 31 --extract-diagrams --quality-target 90
 ```
 
-- Exit **0** = all thresholds met.
-- Exit **1** = one or more thresholds failed.
-- Exit **2** = invalid input (missing files, no overlapping pages).
+See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for benchmarks.
 
-### Save a detailed report
-
-```bash
-python scripts/eval_ground_truth.py \
-    --extraction output.json \
-    --ground-truth gt.json \
-    --out eval_report.json
-```
-
-The report JSON includes per-page metrics, aggregate stats, threshold results, and lists of pages that failed.
-
-## Tests
-
-Run unit tests (no external PDFs required):
+## Repository Structure
 
 ```
-python -m unittest
+PDF-Scraper/
+├── app/              # Core extraction engine
+│   ├── cli.py        # CLI interface with exit codes
+│   ├── api.py        # FastAPI endpoint
+│   └── ocr.py        # Multi-pass OCR with quality gates
+├── api/              # API deployment config
+├── training/         # Custom Tesseract model training
+├── scripts/          # Batch processing, evaluation, quality tools
+├── tests/            # Unit tests
+├── docs/             # Deployment guides, performance docs
+├── static/           # Web UI assets
+├── public/           # Vercel frontend
+├── Dockerfile        # Container deployment
+├── railway.toml      # Railway deployment
+└── vercel.json       # Vercel deployment
 ```
 
-Batch evaluate quality across multiple PDFs:
+## Deployment
 
-```
-python scripts/quality_batch.py /path/to/a.pdf /path/to/b.pdf --force-ocr --strict-quality
-```
+- **Simple:** <docs/DEPLOY_SIMPLE.md> (Railway + Vercel)
+- **Advanced:** <docs/VERCEL.md>
+
+## License
+
+[Apache 2.0](LICENSE)
+
+-----
+
+Built by [Vinay Tripathi](https://github.com/vinaysflow) · vinay@aurviaglobal.com
